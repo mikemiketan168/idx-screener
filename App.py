@@ -1,285 +1,239 @@
-#!/usr/bin/env python3
-import math, json, re, time
-from datetime import datetime, timedelta
-
+# ==============================
+# 🚀 IDX Screener Ultimate — HYBRID AUTO (Safe + Aggressive)
+# Author: Mike x Mentor
+# ==============================
+import json, math, time
 import numpy as np
 import pandas as pd
 import yfinance as yf
-
 import streamlit as st
-import plotly.graph_objects as go
 
-# =========== UI / THEME ===========
-st.set_page_config(page_title="IDX Screener Ultimate", layout="wide", page_icon="🚀")
+st.set_page_config(page_title="IDX Screener Ultimate", layout="wide")
+
+# ---------- UI STYLES ----------
 st.markdown("""
 <style>
-.main-header {font-size: 3rem; font-weight: 800; letter-spacing: .02em;}
-.good {background: linear-gradient(90deg,#22c55e33,#22c55e11); padding:.2rem .5rem; border-radius:.5rem}
-.warn {background: linear-gradient(90deg,#eab30833,#eab30811); padding:.2rem .5rem; border-radius:.5rem}
-.bad  {background: linear-gradient(90deg,#ef444433,#ef444411); padding:.2rem .5rem; border-radius:.5rem}
-.dataframe {font-size: 0.95rem;}
+.main-header{font-size:3rem;font-weight:800;letter-spacing:.02em}
+.ok{color:#87f3} .bad{color:#f88}
+.buy-signal{background:linear-gradient(90deg,#1f8,#16c);padding:.2rem .5rem;border-radius:.4rem;color:#fff}
+.sell-signal{background:linear-gradient(90deg,#f55,#f90);padding:.2rem .5rem;border-radius:.4rem;color:#fff}
+.small{opacity:.7;font-size:.85rem}
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<div class="main-header">🚀 IDX SCREENER ULTIMATE</div>', unsafe_allow_html=True)
-
-# =========== SETTINGS ===========
-DEFAULT_PERIOD   = "6mo"
-DEFAULT_INTERVAL = "1d"
-TOP_N            = 50           # banyaknya saham ditampilkan di screener
-CACHE_TTL_SEC    = 300          # 5 menit
-
-# =========== LOAD TICKERS ===========
-@st.cache_data(ttl=CACHE_TTL_SEC)
-def load_tickers() -> list[str]:
-    """
-    Gabungkan dari beberapa file, perbaiki suffix .JK, uppercase, unik & sort.
-    File opsional: idx_stocks.json, idx_stocks_extra.json, idx_stocks.txt
-    """
-    tickers: list[str] = []
-
-    def pull_from_json(name):
-        try:
-            with open(name, "r") as f:
-                data = json.load(f)
-                if isinstance(data, list):
-                    return [str(x) for x in data]
-        except Exception:
-            pass
+# ---------- HELPERS ----------
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_tickers() -> list:
+    """Load tickers from local json; sanitize."""
+    try:
+        with open('idx_stocks.json', 'r') as f:
+            data = json.load(f)
+        if isinstance(data, dict) and "tickers" in data:
+            tickers = data["tickers"]
+        else:
+            tickers = data
+        # sanitize
+        tickers = [t.strip().upper() for t in tickers if isinstance(t, str) and t.strip()]
+        tickers = [t if t.endswith(".JK") else f"{t}.JK" for t in tickers]
+        tickers = sorted(list(dict.fromkeys(tickers)))
+        return tickers
+    except Exception as e:
+        st.warning(f"⚠️ Tidak bisa membaca idx_stocks.json: {e}")
         return []
 
-    def pull_from_txt(name):
-        try:
-            with open(name, "r") as f:
-                return [ln.strip() for ln in f if ln.strip()]
-        except Exception:
-            return []
+def _ema(series, length):
+    return series.ewm(span=length, adjust=False).mean()
 
-    tickers += pull_from_json("idx_stocks.json")
-    tickers += pull_from_json("idx_stocks_extra.json")
-    tickers += pull_from_txt("idx_stocks.txt")
+def _atr(df, length=14):
+    high, low, close = df['High'], df['Low'], df['Close']
+    prev_close = close.shift(1)
+    tr = pd.concat([
+        (high - low),
+        (high - prev_close).abs(),
+        (low - prev_close).abs()
+    ], axis=1).max(axis=1)
+    return tr.rolling(length).mean()
 
-    # normalisasi
-    fixed = []
-    for t in tickers:
-        t = t.strip().upper()
-        if not t:
-            continue
-        if not t.endswith(".JK"):
-            # tambahkan .JK jika tidak ada, tapi hanya jika alfanumerik
-            base = re.sub(r"[^A-Z0-9]", "", t)
-            t = (base + ".JK") if not t.endswith(".JK") else t
-            if not t.endswith(".JK"):
-                t = base + ".JK"
-        fixed.append(t)
-
-    # unik + sort
-    uniq = sorted(list(dict.fromkeys(fixed)))
-    return uniq
-
-# =========== DATA FETCH ===========
-@st.cache_data(ttl=CACHE_TTL_SEC)
-def fetch_history(ticker: str, period=DEFAULT_PERIOD, interval=DEFAULT_INTERVAL):
+@st.cache_data(ttl=120, show_spinner=False)
+def fetch_history(ticker: str, period="6mo", interval="1d") -> pd.DataFrame:
+    """Download OHLCV; return empty df on failure."""
     try:
-        df = yf.Ticker(ticker).history(period=period, interval=interval, auto_adjust=True)
-        if isinstance(df, pd.DataFrame) and not df.empty:
-            df = df.dropna()
+        df = yf.download(ticker, period=period, interval=interval, auto_adjust=True, progress=False)
+        if df is None or df.empty:
+            return pd.DataFrame()
+        df = df.dropna().copy()
+        df["EMA9"]  = _ema(df["Close"], 9)
+        df["EMA21"] = _ema(df["Close"], 21)
+        df["EMA50"] = _ema(df["Close"], 50)
+        df["ATR14"] = _atr(df, 14)
+        df["RSI14"] = _rsi(df["Close"], 14)
+        df["VOL_MA20"] = df["Volume"].rolling(20).mean()
         return df
     except Exception:
         return pd.DataFrame()
 
-# =========== INDICATORS ===========
-def ema(series: pd.Series, length: int):
-    if series is None or series.empty:
-        return pd.Series(dtype=float)
-    return series.ewm(span=length, adjust=False, min_periods=length).mean()
+def _rsi(close, length=14):
+    delta = close.diff()
+    up = delta.clip(lower=0)
+    down = -1*delta.clip(upper=0)
+    ma_up = up.rolling(length).mean()
+    ma_down = down.rolling(length).mean()
+    rs = ma_up / (ma_down.replace(0, np.nan))
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
 
-def atr(df: pd.DataFrame, length: int = 14):
-    if df is None or df.empty:
-        return pd.Series(dtype=float)
-    high, low, close = df["High"], df["Low"], df["Close"]
-    tr = pd.concat([
-        (high - low),
-        (high - close.shift()).abs(),
-        (low - close.shift()).abs(),
-    ], axis=1).max(axis=1)
-    return tr.rolling(length, min_periods=length).mean()
-
-def compute_indicators(df: pd.DataFrame):
-    if df is None or df.empty:
-        return df
-    df = df.copy()
-    df["EMA9"]  = ema(df["Close"], 9)
-    df["EMA21"] = ema(df["Close"], 21)
-    df["EMA50"] = ema(df["Close"], 50)
-    df["ATR14"] = atr(df, 14)
-    return df
-
-# =========== SIGNAL ENGINE ===========
-def score_signal_row(row) -> tuple[int, str, float, float, float]:
-    """
-    Return: (score(0-100), signal, prob, entry_ideal, entry_aggr)
-    """
-    c, e9, e21, e50, atr = row["Close"], row["EMA9"], row["EMA21"], row["EMA50"], row["ATR14"]
-
-    # guard NaN
-    if any(map(lambda x: (x is None) or (isinstance(x, float) and math.isnan(x)), [c, e9, e21, e50])):
-        return (0, "WAIT", 0.5, float("nan"), float("nan"))
-
-    # basic structure
-    up   = (c > e9 > e21 > e50)
-    bull = (c > e21 > e50)
-    down = (c < e9 < e21 < e50)
-
-    score = 50
-    if up:   score += 40
-    elif bull: score += 20
-    if c > e9:   score += 5
-    if c > e21:  score += 3
-    if c > e50:  score += 2
-    if down: score = 10
-
-    score = max(0, min(100, score))
-
-    if score >= 90:
-        signal, prob = "STRONG BUY", 0.80
-    elif score >= 75:
-        signal, prob = "BUY", 0.70
-    elif score <= 25:
-        signal, prob = "SELL", 0.20
-    else:
-        signal, prob = "HOLD", 0.55
-
-    # entries: ideal = pullback ke EMA21, agresif = breakout high 3 bar
-    try:
-        entry_ideal = float(e21) if not math.isnan(e21) else float("nan")
-    except Exception:
-        entry_ideal = float("nan")
-
-    try:
-        # breakout over last 3 highs
-        entry_aggr = float(row["High_window"])
-    except Exception:
-        entry_aggr = float("nan")
-
-    return (int(score), signal, float(prob), entry_ideal, entry_aggr)
-
-def targets_closes(row, rr_tp=1.5):
-    """
-    TP/CL otonom: TP = close + rr * ATR, CL = close - 1 * ATR (atau di bawah EMA21)
-    """
-    c, atr, e21 = row["Close"], row["ATR14"], row["EMA21"]
-    if any(map(lambda x: x is None or (isinstance(x, float) and math.isnan(x)), [c, atr])):
-        return (float("nan"), float("nan"))
-    tp = c + rr_tp * atr if not math.isnan(atr) else c * 1.02
-    cl = max(c - 1.0 * atr, e21 * 0.985 if pd.notna(e21) else c * 0.98) if not math.isnan(atr) else c * 0.98
-    return (float(tp), float(cl))
-
-# =========== ONE TICKER ANALYZER ===========
-def analyze_single(ticker: str):
-    df = fetch_history(ticker)
-    if df.empty:
-        st.warning("No data. Cek ticker / koneksi.")
-        return
-
-    # extra columns
-    df["High_window"] = df["High"].rolling(3).max()
-    df = compute_indicators(df).dropna()
-
-    last = df.iloc[-1].copy()
-    score, signal, prob, entry_ideal, entry_aggr = score_signal_row(last)
-    tp, cl = targets_closes(last)
-
-    # Header metrics
-    colA, colB, colC, colD = st.columns(4)
-    colA.metric("Price", f"Rp {int(round(last['Close'])):,}".replace(",", "."))
-    colB.metric("Score", f"{score}/100")
-    colC.metric("Signal", signal)
-    colD.metric("Probability", f"{prob*100:.1f}%")
-
-    # Entries/Targets
-    st.write("### Levels")
-    lev1, lev2, lev3 = st.columns(3)
-    lev1.write(f"**Entry (Ideal/EMA21):** Rp {0 if math.isnan(entry_ideal) else int(round(entry_ideal)):,}".replace(",", "."))
-    lev2.write(f"**Entry (Breakout):** Rp {0 if math.isnan(entry_aggr) else int(round(entry_aggr)):,}".replace(",", "."))
-    lev3.write(f"**TP / CL:** Rp {int(round(tp)):,}  /  Rp {int(round(cl)):,}".replace(",", "."))
-
-    # Chart
-    fig = go.Figure()
-    fig.add_trace(go.Candlestick(
-        x=df.index, open=df["Open"], high=df["High"], low=df["Low"], close=df["Close"],
-        name="Price"
-    ))
-    fig.add_trace(go.Scatter(x=df.index, y=df["EMA9"],  name="EMA9"))
-    fig.add_trace(go.Scatter(x=df.index, y=df["EMA21"], name="EMA21"))
-    fig.add_trace(go.Scatter(x=df.index, y=df["EMA50"], name="EMA50"))
-
-    fig.update_layout(height=520, xaxis_rangeslider_visible=False)
-    st.plotly_chart(fig, use_container_width=True)
-
-# =========== MULTI SCREENER ===========
-def score_latest_for(ticker: str):
-    df = fetch_history(ticker)
-    if df.empty or len(df) < 60:
-        return None
-    df["High_window"] = df["High"].rolling(3).max()
-    df = compute_indicators(df).dropna()
+def hybrid_signal(df: pd.DataFrame):
+    """Return dict: price, score, signal, prob, entry, tp1, tp2, cl, mode."""
     last = df.iloc[-1]
-    score, signal, prob, entry_ideal, entry_aggr = score_signal_row(last)
-    tp, cl = targets_closes(last)
     price = float(last["Close"])
-    return {
-        "Ticker": ticker,
-        "Price": price,
-        "Score": score,
-        "Signal": signal,
-        "Prob": prob,
-        "Entry_Ideal": entry_ideal,
-        "Entry_Break": entry_aggr,
-        "TP": tp,
-        "CL": cl,
-    }
+    ema9, ema21, ema50 = float(last["EMA9"]), float(last["EMA21"]), float(last["EMA50"])
+    atr = max(0.01, float(last["ATR14"]))
+    rsi = float(last["RSI14"])
+    vol_boost = 1.0 if last["Volume"] <= 0 else float(last["Volume"] / max(1, last["VOL_MA20"]))
 
-def run_screener(tickers: list[str], top_n=TOP_N):
-    records = []
-    for t in tickers:
-        info = score_latest_for(t)
-        if info:
-            records.append(info)
+    # Base trend score
+    trend_up = 0
+    if price > ema9 > ema21 > ema50: trend_up = 1.0
+    elif price > ema21 > ema50: trend_up = 0.7
+    elif ema9 > ema21 > ema50: trend_up = 0.6
+    else: trend_up = 0.0
 
-    if not records:
-        st.warning("Tidak ada data yang valid.")
-        return
+    # Breakout check (3-day high with volume)
+    recent_high = df["High"].rolling(3).max().iloc[-2]  # exclude today
+    breakout = price > recent_high and vol_boost > 1.1
 
-    df = pd.DataFrame(records)
-    # sort: score desc, prob desc
-    df = df.sort_values(["Score", "Prob"], ascending=[False, False]).head(top_n)
+    # Mode selector (Hybrid)
+    # If clear uptrend -> Safe mode; else if breakout with vol -> Aggressive; else Neutral/Hold
+    if trend_up >= 0.7:
+        mode = "SAFE"
+    elif breakout:
+        mode = "AGGR"
+    else:
+        mode = "NEUTRAL"
 
-    # formatting
-    df["Price"] = df["Price"].round(2)
-    for col in ["Entry_Ideal", "Entry_Break", "TP", "CL"]:
-        df[col] = df[col].round(2)
+    # Entry logic
+    if mode == "SAFE":
+        # pullback near EMA21 with price > EMA50
+        entry_ideal = round((ema21 * 1.00), 2)
+        entry_aggr  = round((ema9  * 1.00), 2)
+        stop = round(min(ema50, price - 1.2*atr), 2)
+        rr_unit = max(0.01, (entry_aggr - stop))
+        tp1 = round(entry_aggr + 1.0*rr_unit, 2)
+        tp2 = round(entry_aggr + 2.0*rr_unit, 2)
+        base_score = 70 + int(15*trend_up) + int(min(15, (vol_boost-1)*10))
+        label = "STRONG BUY" if base_score >= 90 else "BUY"
+    elif mode == "AGGR":
+        entry_aggr = round(max(price, recent_high), 2)
+        entry_ideal = round((recent_high*0.99), 2)
+        stop = round(entry_aggr - 1.5*atr, 2)
+        rr_unit = max(0.01, (entry_aggr - stop))
+        tp1 = round(entry_aggr + 1.5*rr_unit, 2)
+        tp2 = round(entry_aggr + 3.0*rr_unit, 2)
+        base_score = 60 + int(15*vol_boost) + int(10*(rsi>50)) + int(5*(trend_up>0))
+        label = "BUY" if base_score >= 70 else "SPEC BUY"
+    else:
+        # Neutral / downtrend
+        entry_ideal = None
+        entry_aggr = None
+        stop = None
+        tp1 = None
+        tp2 = None
+        base_score = 30 if rsi>45 else 20
+        label = "HOLD" if rsi>45 else "SELL"
 
-    st.dataframe(df.reset_index(drop=True), use_container_width=True)
+    # Probability heuristic (bounded)
+    prob = np.clip((base_score/100.0) * (0.6 if label in ["SELL"] else 0.8) + (0.05 if vol_boost>1.2 else 0), 0.2, 0.9)
 
-    st.download_button(
-        "⬇️ Download (CSV)",
-        df.to_csv(index=False).encode("utf-8"),
-        file_name=f"idx_screener_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-        mime="text/csv",
+    # Clean rounding
+    def r(x): return None if x is None else (round(float(x), 2))
+    return dict(
+        price=r(price), score=int(np.clip(base_score, 0, 100)),
+        signal=label, prob=float(round(prob,2)),
+        entry_ideal=r(entry_ideal), entry_aggr=r(entry_aggr),
+        tp1=r(tp1), tp2=r(tp2), cl=r(stop),
+        mode=mode, ema9=r(ema9), ema21=r(ema21), ema50=r(ema50), rsi=round(float(rsi),1)
     )
 
-# =========== UI SWITCH ===========
-mode = st.sidebar.radio("Mode:", ["📈 Single Stock", "🔎 Multi-Stock Screener"], index=0)
+def analyze_one(ticker: str):
+    df = fetch_history(ticker)
+    if df.empty:
+        return None
+    d = hybrid_signal(df)
+    d.update({"ticker": ticker})
+    return d, df
+
+def table_format(rows):
+    df = pd.DataFrame(rows)
+    if df.empty: return df
+    order = ["ticker","price","score","signal","prob","mode","entry_ideal","entry_aggr","tp1","tp2","cl","rsi"]
+    df = df[order]
+    df["prob"] = (df["prob"]*100).round(0).astype(int).astype(str)+"%"
+    return df.sort_values(["score","prob"], ascending=False)
+
+# ---------- UI ----------
+st.markdown('<div class="main-header">🚀 IDX SCREENER <span class="ok">ULTIMATE</span></div>', unsafe_allow_html=True)
+mode = st.sidebar.radio("Mode:", ["📈 Single Stock","🔍 Multi-Stock Screener"], index=1)
 tickers = load_tickers()
 
 if mode == "📈 Single Stock":
-    sel = st.selectbox("Stock:", options=tickers, index=0)
-    if st.button("📊 Analyze"):
-        analyze_single(sel)
+    if not tickers:
+        st.warning("Tambah/benarkan `idx_stocks.json` dulu, ya.")
+        st.stop()
+    sym = st.selectbox("Stock:", options=tickers, index=min(0, len(tickers)-1))
+    btn = st.button("📊 Analyze")
+    if btn:
+        out = analyze_one(sym)
+        if not out:
+            st.error("Data tidak tersedia untuk saham itu.")
+        else:
+            data, df = out
+            col1,col2 = st.columns([1,1])
+            with col1:
+                st.metric("Price", f"Rp {int(round(data['price'])):,}")
+                st.metric("Score", f"{data['score']}/100")
+                st.markdown(f"**Signal**: <span class='buy-signal'>{data['signal']}</span>", unsafe_allow_html=True)
+                st.metric("Probability", f"{int(data['prob']*100)}%")
+                st.markdown(f"**Mode**: `{data['mode']}`  |  RSI: **{data['rsi']}**")
+                st.write("—")
+                st.write(f"**Entry Ideal**: {data['entry_ideal']}")
+                st.write(f"**Entry Aggressive**: {data['entry_aggr']}")
+                st.write(f"**TP1**: {data['tp1']} | **TP2**: {data['tp2']}")
+                st.write(f"**Cut Loss**: {data['cl']}")
+                st.caption("Trailing stop: max(EMA21, price - 1.5 * ATR14)")
+            with col2:
+                import plotly.graph_objects as go
+                fig = go.Figure()
+                fig.add_candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name="Price")
+                fig.add_trace(go.Scatter(x=df.index, y=df['EMA9'],  name="EMA9"))
+                fig.add_trace(go.Scatter(x=df.index, y=df['EMA21'], name="EMA21"))
+                fig.add_trace(go.Scatter(x=df.index, y=df['EMA50'], name="EMA50"))
+                fig.update_layout(height=420, margin=dict(l=0,r=0,t=10,b=0))
+                st.plotly_chart(fig, use_container_width=True)
 
 else:
     st.write("Tampilkan **Top N** saham terbaik (Score & Prob tertinggi).")
-    topn = st.slider("Jumlah hasil (Top N)", 10, 200, TOP_N, step=10)
+    topn = st.slider("Jumlah hasil (Top N)", 10, 200, 50, step=10)
     if st.button("🚀 Screener Now!"):
-        run_screener(tickers, top_n=topn)
+        if not tickers:
+            st.warning("Tambahkan ticker di `idx_stocks.json` terlebih dahulu.")
+            st.stop()
+        progress = st.progress(0)
+        out_rows = []
+        total = len(tickers)
+        for i, sym in enumerate(tickers, start=1):
+            res = analyze_one(sym)
+            if res:
+                data, _ = res
+                # Skip jika signal SELL & score rendah agar tabel tetap relevan
+                if not (data["signal"]=="SELL" and data["score"]<40):
+                    out_rows.append(data)
+            progress.progress(i/total)
+        if not out_rows:
+            st.warning("Tidak ada data yang valid.")
+        else:
+            df = table_format(out_rows).head(topn)
+            st.dataframe(df, use_container_width=True)
+            st.caption("Catatan: Saham tanpa data valid otomatis di-skip. Top N diurutkan berdasarkan Score & Prob.")
+
+# Footer
+st.caption("© IDX Screener Ultimate — Hybrid Auto | EMA9/21/50, ATR14, RSI14, Volume breakout")
