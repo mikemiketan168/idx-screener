@@ -5,546 +5,313 @@ import numpy as np
 import json
 import time
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime
 
 st.set_page_config(page_title="IDX Power Screener", page_icon="🚀", layout="wide")
 
-# ---------- UI THEME ----------
+# ========== STYLING ==========
 st.markdown("""
 <style>
-.big {font-size:2rem;font-weight:700;color:#1f77b4}
-.subtitle {font-size:1.2rem;color:#666;margin-bottom:2rem}
-.tag {display:inline-block;padding:.3rem .8rem;border-radius:.5rem;background:#eee;margin:.2rem;font-weight:600}
-.buy {background:#d7ffd9;color:#0a5f0a}
-.sell{background:#ffd7d7;color:#7f0000}
-.warn{background:#fff2cc;color:#7f6000}
-.bandar {background:#e3d7ff;color:#4a0a7f}
-.value {background:#d7f5ff;color:#0a4f7f}
-.metric-card {background:#f8f9fa;padding:1rem;border-radius:.5rem;border-left:4px solid #1f77b4}
+.big-title {font-size:2.5rem;font-weight:800;color:#1e40af;margin-bottom:0.5rem}
+.subtitle {font-size:1.1rem;color:#64748b;margin-bottom:2rem}
 </style>
 """, unsafe_allow_html=True)
 
-# ---------- GLOBAL CACHE ----------
-@st.cache_resource
-def get_session():
-    """Persistent session for API calls"""
-    session = requests.Session()
-    session.headers.update({
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Accept': '*/*',
-        'Connection': 'keep-alive'
-    })
-    return session
-
-# ---------- DATA FETCHER ----------
+# ========== DATA FETCHER ==========
 @st.cache_data(ttl=600, show_spinner=False)
-def fetch_yahoo_api(ticker: str, period="6mo", interval="1d"):
-    """Fetch data dari Yahoo Finance API"""
+def fetch_data(ticker, period="6mo"):
+    """Fetch dari Yahoo Finance API"""
     try:
         end = int(datetime.now().timestamp())
-        period_map = {"5d": 5, "1mo": 30, "3mo": 90, "6mo": 180, "1y": 365}
-        days = period_map.get(period, 180)
-        start = end - (days * 24 * 3600)
+        days = {"5d": 5, "1mo": 30, "3mo": 90, "6mo": 180, "1y": 365}.get(period, 180)
+        start = end - (days * 86400)
         
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
-        params = {"period1": start, "period2": end, "interval": interval, "events": "history"}
+        params = {"period1": start, "period2": end, "interval": "1d"}
+        headers = {'User-Agent': 'Mozilla/5.0'}
         
-        headers = {'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)'}
-        response = requests.get(url, params=params, headers=headers, timeout=15, verify=False)
-        
-        if response.status_code != 200:
+        r = requests.get(url, params=params, headers=headers, timeout=15, verify=False)
+        if r.status_code != 200:
             return None
         
-        data = response.json()
-        result = data['chart']['result'][0]
-        timestamps = result['timestamp']
-        quotes = result['indicators']['quote'][0]
+        data = r.json()['chart']['result'][0]
+        q = data['indicators']['quote'][0]
         
         df = pd.DataFrame({
-            'Open': quotes['open'],
-            'High': quotes['high'],
-            'Low': quotes['low'],
-            'Close': quotes['close'],
-            'Volume': quotes['volume']
-        }, index=pd.to_datetime(timestamps, unit='s'))
+            'Open': q['open'],
+            'High': q['high'],
+            'Low': q['low'],
+            'Close': q['close'],
+            'Volume': q['volume']
+        }, index=pd.to_datetime(data['timestamp'], unit='s'))
         
-        df = df.dropna(subset=['Open', 'High', 'Low', 'Close'])
-        
-        if len(df) < 10:
+        df = df.dropna()
+        if len(df) < 20:
             return None
         
-        # Technical Indicators
-        df["SMA20"] = df["Close"].rolling(20).mean()
-        df["SMA50"] = df["Close"].rolling(50).mean()
-        df["EMA9"] = df["Close"].ewm(span=9, adjust=False).mean()
-        df["EMA21"] = df["Close"].ewm(span=21, adjust=False).mean()
-        df["EMA50"] = df["Close"].ewm(span=50, adjust=False).mean()
+        # Indicators
+        df['EMA9'] = df['Close'].ewm(9).mean()
+        df['EMA21'] = df['Close'].ewm(21).mean()
+        df['EMA50'] = df['Close'].ewm(50).mean()
+        df['SMA20'] = df['Close'].rolling(20).mean()
         
-        # RSI
-        delta = df["Close"].diff()
-        gain = np.where(delta > 0, delta, 0.0)
-        loss = np.where(delta < 0, -delta, 0.0)
-        avg_gain = pd.Series(gain, index=df.index).rolling(14, min_periods=14).mean()
-        avg_loss = pd.Series(loss, index=df.index).rolling(14, min_periods=14).mean()
-        rs = avg_gain / (avg_loss.replace(0, np.nan))
-        df["RSI"] = 100 - (100 / (1 + rs))
+        delta = df['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+        rs = gain / loss
+        df['RSI'] = 100 - (100 / (1 + rs))
         
-        # MACD
-        exp1 = df["Close"].ewm(span=12, adjust=False).mean()
-        exp2 = df["Close"].ewm(span=26, adjust=False).mean()
-        df["MACD"] = exp1 - exp2
-        df["SIGNAL"] = df["MACD"].ewm(span=9, adjust=False).mean()
-        df["MACD_HIST"] = df["MACD"] - df["SIGNAL"]
+        exp1 = df['Close'].ewm(12).mean()
+        exp2 = df['Close'].ewm(26).mean()
+        df['MACD'] = exp1 - exp2
+        df['SIGNAL'] = df['MACD'].ewm(9).mean()
         
-        # Bollinger Bands
-        df["BB_MID"] = df["Close"].rolling(20).mean()
-        df["BB_STD"] = df["Close"].rolling(20).std()
-        df["BB_UPPER"] = df["BB_MID"] + (2 * df["BB_STD"])
-        df["BB_LOWER"] = df["BB_MID"] - (2 * df["BB_STD"])
+        df['BB_MID'] = df['Close'].rolling(20).mean()
+        df['BB_STD'] = df['Close'].rolling(20).std()
+        df['BB_UPPER'] = df['BB_MID'] + 2 * df['BB_STD']
+        df['BB_LOWER'] = df['BB_MID'] - 2 * df['BB_STD']
         
-        # Stochastic
-        low14 = df["Low"].rolling(14).min()
-        high14 = df["High"].rolling(14).max()
-        df["STOCH_K"] = 100 * (df["Close"] - low14) / (high14 - low14)
-        df["STOCH_D"] = df["STOCH_K"].rolling(3).mean()
-        
-        # ATR (Average True Range)
-        high_low = df["High"] - df["Low"]
-        high_close = np.abs(df["High"] - df["Close"].shift())
-        low_close = np.abs(df["Low"] - df["Close"].shift())
-        ranges = pd.concat([high_low, high_close, low_close], axis=1)
-        true_range = ranges.max(axis=1)
-        df["ATR"] = true_range.rolling(14).mean()
-        
-        return df
-    except Exception as e:
-        return None
-
-@st.cache_data(ttl=600, show_spinner=False)
-def fetch_with_yfinance(ticker: str, period="6mo", interval="1d"):
-    """Fallback yfinance"""
-    try:
-        import yfinance as yf
-        stock = yf.Ticker(ticker)
-        df = stock.history(period=period, interval=interval, auto_adjust=False)
-        
-        if df is None or df.empty or len(df) < 10:
-            return None
-        
-        df.columns = [col.capitalize() if isinstance(col, str) else col for col in df.columns]
-        
-        # Apply same indicators
-        df["SMA20"] = df["Close"].rolling(20).mean()
-        df["SMA50"] = df["Close"].rolling(50).mean()
-        df["EMA9"] = df["Close"].ewm(span=9, adjust=False).mean()
-        df["EMA21"] = df["Close"].ewm(span=21, adjust=False).mean()
-        df["EMA50"] = df["Close"].ewm(span=50, adjust=False).mean()
-        
-        delta = df["Close"].diff()
-        gain = np.where(delta > 0, delta, 0.0)
-        loss = np.where(delta < 0, -delta, 0.0)
-        avg_gain = pd.Series(gain, index=df.index).rolling(14, min_periods=14).mean()
-        avg_loss = pd.Series(loss, index=df.index).rolling(14, min_periods=14).mean()
-        rs = avg_gain / (avg_loss.replace(0, np.nan))
-        df["RSI"] = 100 - (100 / (1 + rs))
-        
-        exp1 = df["Close"].ewm(span=12, adjust=False).mean()
-        exp2 = df["Close"].ewm(span=26, adjust=False).mean()
-        df["MACD"] = exp1 - exp2
-        df["SIGNAL"] = df["MACD"].ewm(span=9, adjust=False).mean()
-        df["MACD_HIST"] = df["MACD"] - df["SIGNAL"]
-        
-        df["BB_MID"] = df["Close"].rolling(20).mean()
-        df["BB_STD"] = df["Close"].rolling(20).std()
-        df["BB_UPPER"] = df["BB_MID"] + (2 * df["BB_STD"])
-        df["BB_LOWER"] = df["BB_MID"] - (2 * df["BB_STD"])
-        
-        low14 = df["Low"].rolling(14).min()
-        high14 = df["High"].rolling(14).max()
-        df["STOCH_K"] = 100 * (df["Close"] - low14) / (high14 - low14)
-        df["STOCH_D"] = df["STOCH_K"].rolling(3).mean()
-        
-        high_low = df["High"] - df["Low"]
-        high_close = np.abs(df["High"] - df["Close"].shift())
-        low_close = np.abs(df["Low"] - df["Close"].shift())
-        ranges = pd.concat([high_low, high_close, low_close], axis=1)
-        true_range = ranges.max(axis=1)
-        df["ATR"] = true_range.rolling(14).mean()
+        low14 = df['Low'].rolling(14).min()
+        high14 = df['High'].rolling(14).max()
+        df['STOCH'] = 100 * (df['Close'] - low14) / (high14 - low14)
         
         return df
     except:
         return None
 
-def fetch_data(ticker: str, period="6mo", interval="1d", use_api=True):
-    """Smart fetch dengan fallback"""
-    if use_api:
-        df = fetch_yahoo_api(ticker, period, interval)
-        if df is not None:
-            return df
-        time.sleep(0.5)
-    return fetch_with_yfinance(ticker, period, interval)
-
-# ---------- SCORING SYSTEMS ----------
+# ========== SCORING FUNCTIONS ==========
 
 def score_full_screener(df):
-    """Full technical analysis scoring"""
+    """Full Technical Screener"""
     try:
-        row = df.iloc[-1]
-        score = 0
-        details = {}
+        r = df.iloc[-1]
+        score, det = 0, {}
         
-        # Trend (40 points)
-        if row["Close"] > row["EMA9"] > row["EMA21"] > row["EMA50"]:
+        if r['Close'] > r['EMA9'] > r['EMA21'] > r['EMA50']:
             score += 40
-            details["Trend"] = "✅ Strong Uptrend (+40)"
-        elif row["Close"] > row["EMA9"]:
+            det['Trend'] = '✅ Strong Uptrend (+40)'
+        elif r['Close'] > r['EMA9']:
             score += 20
-            details["Trend"] = "⚠️ Short-term Up (+20)"
+            det['Trend'] = '⚠️ Short Up (+20)'
         else:
-            details["Trend"] = "❌ Downtrend (+0)"
+            det['Trend'] = '❌ Down (+0)'
         
-        # RSI (20 points)
-        rsi = row["RSI"]
-        if 40 <= rsi <= 70:
+        if 40 <= r['RSI'] <= 70:
             score += 20
-            details["RSI"] = f"✅ {rsi:.1f} Healthy (+20)"
-        elif 30 < rsi < 40 or 70 < rsi < 80:
+            det['RSI'] = f"✅ {r['RSI']:.1f} (+20)"
+        elif 30 < r['RSI'] < 80:
             score += 10
-            details["RSI"] = f"⚠️ {rsi:.1f} Warning (+10)"
+            det['RSI'] = f"⚠️ {r['RSI']:.1f} (+10)"
         else:
-            details["RSI"] = f"❌ {rsi:.1f} Extreme (+0)"
+            det['RSI'] = f"❌ {r['RSI']:.1f} (+0)"
         
-        # MACD (20 points)
-        if row["MACD"] > row["SIGNAL"] and row["MACD_HIST"] > 0:
+        if r['MACD'] > r['SIGNAL']:
             score += 20
-            details["MACD"] = "✅ Bullish (+20)"
-        elif row["MACD"] > row["SIGNAL"]:
-            score += 10
-            details["MACD"] = "⚠️ Weakening (+10)"
+            det['MACD'] = '✅ Bullish (+20)'
         else:
-            details["MACD"] = "❌ Bearish (+0)"
+            det['MACD'] = '❌ Bearish (+0)'
         
-        # Volume (10 points)
-        vol_avg = df["Volume"].rolling(20).mean().iloc[-1]
-        if row["Volume"] > vol_avg * 1.5:
+        vol_avg = df['Volume'].rolling(20).mean().iloc[-1]
+        if r['Volume'] > vol_avg * 1.3:
             score += 10
-            details["Volume"] = "✅ Surge (+10)"
-        elif row["Volume"] > vol_avg:
-            score += 5
-            details["Volume"] = "⚠️ Above avg (+5)"
+            det['Volume'] = '✅ High (+10)'
         else:
-            details["Volume"] = "❌ Low (+0)"
+            det['Volume'] = '❌ Low (+0)'
         
-        # Momentum (10 points)
-        price_5d_ago = df["Close"].iloc[-5]
-        momentum = (row["Close"] - price_5d_ago) / price_5d_ago * 100
-        if 2 <= momentum <= 15:
+        mom = (r['Close'] - df['Close'].iloc[-5]) / df['Close'].iloc[-5] * 100
+        if 2 <= mom <= 15:
             score += 10
-            details["Momentum"] = f"✅ {momentum:.1f}% (+10)"
-        elif momentum > 0:
-            score += 5
-            details["Momentum"] = f"⚠️ {momentum:.1f}% (+5)"
+            det['Momentum'] = f'✅ {mom:.1f}% (+10)'
         else:
-            details["Momentum"] = f"❌ {momentum:.1f}% (+0)"
+            det['Momentum'] = f'❌ {mom:.1f}% (+0)'
         
-        return score, details
+        return score, det
     except:
         return 0, {}
 
 def score_bpjs(df):
     """BPJS - Beli Pagi Jual Sore"""
     try:
-        score = 0
-        details = {}
+        r = df.iloc[-1]
+        score, det = 0, {}
         
-        # Volatility (30 pts)
-        atr = df["ATR"].iloc[-1]
-        avg_price = df["Close"].iloc[-1]
-        volatility_pct = (atr / avg_price) * 100
-        
-        if 2 < volatility_pct < 5:
+        vol_pct = ((df['High'] - df['Low']) / df['Low'] * 100).tail(5).mean()
+        if 2 < vol_pct < 5:
             score += 30
-            details["Volatility"] = f"✅ {volatility_pct:.2f}% Perfect (+30)"
-        elif 1.5 < volatility_pct < 6:
-            score += 15
-            details["Volatility"] = f"⚠️ {volatility_pct:.2f}% OK (+15)"
+            det['Volatility'] = f'✅ {vol_pct:.2f}% (+30)'
         else:
-            details["Volatility"] = f"❌ {volatility_pct:.2f}% Bad (+0)"
+            det['Volatility'] = f'❌ {vol_pct:.2f}% (+0)'
         
-        # Volume Surge (25 pts)
-        vol_avg = df["Volume"].rolling(20).mean().iloc[-1]
-        recent_vol = df["Volume"].tail(3).mean()
-        vol_ratio = recent_vol / vol_avg
-        
-        if vol_ratio > 1.5:
+        vol_avg = df['Volume'].rolling(20).mean().iloc[-1]
+        if r['Volume'] > vol_avg * 1.5:
             score += 25
-            details["Volume"] = f"✅ {vol_ratio:.2f}x (+25)"
-        elif vol_ratio > 1.2:
-            score += 12
-            details["Volume"] = f"⚠️ {vol_ratio:.2f}x (+12)"
+            det['Volume'] = '✅ Surge (+25)'
         else:
-            details["Volume"] = f"❌ {vol_ratio:.2f}x (+0)"
+            det['Volume'] = '❌ Low (+0)'
         
-        # RSI Entry Zone (25 pts)
-        rsi = df["RSI"].iloc[-1]
-        if 30 < rsi < 50:
+        if 30 < r['RSI'] < 50:
             score += 25
-            details["RSI"] = f"✅ {rsi:.1f} Entry zone (+25)"
-        elif 25 < rsi < 55:
-            score += 12
-            details["RSI"] = f"⚠️ {rsi:.1f} OK (+12)"
+            det['RSI'] = f"✅ {r['RSI']:.1f} (+25)"
         else:
-            details["RSI"] = f"❌ {rsi:.1f} Bad (+0)"
+            det['RSI'] = f"❌ {r['RSI']:.1f} (+0)"
         
-        # Stochastic (20 pts)
-        stoch = df["STOCH_K"].iloc[-1]
-        if stoch < 30:
+        if r['STOCH'] < 30:
             score += 20
-            details["Stochastic"] = f"✅ {stoch:.1f} Oversold (+20)"
-        elif stoch < 50:
-            score += 10
-            details["Stochastic"] = f"⚠️ {stoch:.1f} OK (+10)"
+            det['Stochastic'] = f"✅ {r['STOCH']:.1f} (+20)"
         else:
-            details["Stochastic"] = f"❌ {stoch:.1f} High (+0)"
+            det['Stochastic'] = f"❌ {r['STOCH']:.1f} (+0)"
         
-        return score, details
+        return score, det
     except:
         return 0, {}
 
 def score_bsjp(df):
     """BSJP - Beli Sore Jual Pagi"""
     try:
-        score = 0
-        details = {}
+        r = df.iloc[-1]
+        score, det = 0, {}
         
-        # BB Position (30 pts)
-        bb_lower = df["BB_LOWER"].iloc[-1]
-        bb_upper = df["BB_UPPER"].iloc[-1]
-        bb_mid = df["BB_MID"].iloc[-1]
-        price = df["Close"].iloc[-1]
-        
-        bb_position = (price - bb_lower) / (bb_upper - bb_lower) * 100
-        
-        if bb_position < 20:
+        bb_pos = (r['Close'] - r['BB_LOWER']) / (r['BB_UPPER'] - r['BB_LOWER']) * 100
+        if bb_pos < 20:
             score += 30
-            details["BB Position"] = f"✅ {bb_position:.1f}% Near support (+30)"
-        elif bb_position < 40:
-            score += 15
-            details["BB Position"] = f"⚠️ {bb_position:.1f}% OK (+15)"
+            det['BB Position'] = f'✅ {bb_pos:.1f}% (+30)'
         else:
-            details["BB Position"] = f"❌ {bb_position:.1f}% High (+0)"
+            det['BB Position'] = f'❌ {bb_pos:.1f}% (+0)'
         
-        # Evening Dip (25 pts)
-        prev_close = df["Close"].iloc[-2]
-        gap = (price - prev_close) / prev_close * 100
-        
+        gap = (r['Close'] - df['Close'].iloc[-2]) / df['Close'].iloc[-2] * 100
         if -1.5 < gap < 0:
             score += 25
-            details["Gap"] = f"✅ {gap:.2f}% Perfect dip (+25)"
-        elif -2.5 < gap < 0.5:
-            score += 12
-            details["Gap"] = f"⚠️ {gap:.2f}% OK (+12)"
+            det['Gap'] = f'✅ {gap:.2f}% (+25)'
         else:
-            details["Gap"] = f"❌ {gap:.2f}% Bad (+0)"
+            det['Gap'] = f'❌ {gap:.2f}% (+0)'
         
-        # RSI (25 pts)
-        rsi = df["RSI"].iloc[-1]
-        if 35 < rsi < 55:
+        if 35 < r['RSI'] < 55:
             score += 25
-            details["RSI"] = f"✅ {rsi:.1f} Perfect (+25)"
-        elif 30 < rsi < 60:
-            score += 12
-            details["RSI"] = f"⚠️ {rsi:.1f} OK (+12)"
+            det['RSI'] = f"✅ {r['RSI']:.1f} (+25)"
         else:
-            details["RSI"] = f"❌ {rsi:.1f} Bad (+0)"
+            det['RSI'] = f"❌ {r['RSI']:.1f} (+0)"
         
-        # Overnight History (20 pts)
-        overnight_gains = []
+        gains = []
         for i in range(-5, -1):
             try:
-                prev = df["Close"].iloc[i]
-                next_open = df["Open"].iloc[i+1]
-                gain = (next_open - prev) / prev * 100
-                overnight_gains.append(gain)
+                gain = (df['Open'].iloc[i+1] - df['Close'].iloc[i]) / df['Close'].iloc[i] * 100
+                gains.append(gain)
             except:
                 pass
         
-        if overnight_gains:
-            avg = np.mean(overnight_gains)
-            if avg > 0.3:
-                score += 20
-                details["History"] = f"✅ Avg +{avg:.2f}% (+20)"
-            elif avg > 0:
-                score += 10
-                details["History"] = f"⚠️ Avg +{avg:.2f}% (+10)"
-            else:
-                details["History"] = f"❌ Avg {avg:.2f}% (+0)"
+        if gains and np.mean(gains) > 0.3:
+            score += 20
+            det['History'] = f'✅ +{np.mean(gains):.2f}% (+20)'
+        else:
+            det['History'] = '❌ Negative (+0)'
         
-        return score, details
+        return score, det
     except:
         return 0, {}
 
 def score_bandar(df):
-    """Bandar Tracking - Deteksi akumulasi"""
+    """Bandar Tracking"""
     try:
-        score = 0
-        details = {}
-        phase = "UNKNOWN"
+        score, det = 0, {}
         
-        # OBV Calculation
         obv = [0]
         for i in range(1, len(df)):
-            if df["Close"].iloc[i] > df["Close"].iloc[i-1]:
-                obv.append(obv[-1] + df["Volume"].iloc[i])
-            elif df["Close"].iloc[i] < df["Close"].iloc[i-1]:
-                obv.append(obv[-1] - df["Volume"].iloc[i])
+            if df['Close'].iloc[i] > df['Close'].iloc[i-1]:
+                obv.append(obv[-1] + df['Volume'].iloc[i])
+            elif df['Close'].iloc[i] < df['Close'].iloc[i-1]:
+                obv.append(obv[-1] - df['Volume'].iloc[i])
             else:
                 obv.append(obv[-1])
+        df['OBV'] = obv
         
-        df["OBV"] = obv
+        vol_ratio = df['Volume'].tail(5).mean() / df['Volume'].rolling(20).mean().iloc[-1]
+        price_chg = (df['Close'].iloc[-1] - df['Close'].iloc[-20]) / df['Close'].iloc[-20] * 100
+        obv_trend = (df['OBV'].iloc[-1] - df['OBV'].iloc[-20]) / abs(df['OBV'].iloc[-20])
         
-        # Volume Analysis
-        vol_ma20 = df["Volume"].rolling(20).mean().iloc[-1]
-        recent_vol = df["Volume"].tail(5).mean()
-        vol_ratio = recent_vol / vol_ma20
-        
-        # Price Change
-        price_change = (df["Close"].iloc[-1] - df["Close"].iloc[-20]) / df["Close"].iloc[-20] * 100
-        
-        # OBV Trend
-        obv_ma = pd.Series(df["OBV"]).rolling(20).mean()
-        obv_trend = (df["OBV"].iloc[-1] - obv_ma.iloc[-20]) / abs(obv_ma.iloc[-20])
-        
-        # Phase Detection
-        if vol_ratio > 1.3 and price_change > -2 and obv_trend > 0.1:
-            phase = "🟢 AKUMULASI"
+        if vol_ratio > 1.3 and price_chg > -2 and obv_trend > 0.1:
+            phase = '🟢 AKUMULASI'
             score = 85
-            details["Phase"] = "✅ AKUMULASI (Bandar ngumpul)"
-            details["Volume"] = f"✅ {vol_ratio:.2f}x avg"
-            details["Price"] = f"✅ {price_change:+.2f}%"
-            details["OBV"] = "✅ Trending UP"
-            details["Action"] = "🚀 BUY - Ikut bandar!"
-            
-        elif vol_ratio > 1.3 and price_change < -3 and obv_trend < -0.1:
-            phase = "🔴 DISTRIBUSI"
+            det['Phase'] = 'AKUMULASI'
+            det['Action'] = '🚀 BUY'
+        elif vol_ratio > 1.3 and price_chg < -3:
+            phase = '🔴 DISTRIBUSI'
             score = 15
-            details["Phase"] = "⚠️ DISTRIBUSI (Bandar buang)"
-            details["Volume"] = f"⚠️ {vol_ratio:.2f}x avg"
-            details["Price"] = f"❌ {price_change:+.2f}%"
-            details["OBV"] = "❌ Trending DOWN"
-            details["Action"] = "🛑 AVOID - Bandar lagi jual!"
-            
-        elif price_change > 5 and vol_ratio < 1.5:
-            phase = "🚀 MARKUP"
+            det['Phase'] = 'DISTRIBUSI'
+            det['Action'] = '🛑 AVOID'
+        elif price_chg > 5:
+            phase = '🚀 MARKUP'
             score = 90
-            details["Phase"] = "✅ MARKUP (Harga naik)"
-            details["Price"] = f"✅ {price_change:+.2f}%"
-            details["Volume"] = f"Normal ({vol_ratio:.2f}x)"
-            details["Action"] = "🎯 HOLD/BUY - Ride the wave!"
-            
-        elif price_change < -5:
-            phase = "📉 MARKDOWN"
-            score = 10
-            details["Phase"] = "❌ MARKDOWN (Harga turun)"
-            details["Price"] = f"❌ {price_change:+.2f}%"
-            details["Action"] = "⏸️ WAIT - Tunggu bottom"
-            
+            det['Phase'] = 'MARKUP'
+            det['Action'] = '🎯 HOLD'
         else:
-            phase = "⚪ SIDEWAYS"
+            phase = '⚪ SIDEWAYS'
             score = 50
-            details["Phase"] = "⚠️ SIDEWAYS (Konsolidasi)"
-            details["Volume"] = f"{vol_ratio:.2f}x avg"
-            details["Price"] = f"{price_change:+.2f}%"
-            details["Action"] = "⏸️ MONITOR - Tunggu breakout"
+            det['Phase'] = 'SIDEWAYS'
+            det['Action'] = '⏸️ WAIT'
         
-        return score, details, phase
+        det['Volume'] = f'{vol_ratio:.2f}x'
+        det['Price'] = f'{price_chg:+.2f}%'
+        
+        return score, det, phase
     except:
-        return 0, {}, "UNKNOWN"
+        return 0, {}, 'UNKNOWN'
 
-def score_value_hunting(df, ticker):
-    """Saham Murah Fundamental Bagus"""
+def score_value(df):
+    """Value Hunting - Saham Murah"""
     try:
-        score = 0
-        details = {}
+        r = df.iloc[-1]
+        score, det = 0, {}
         
-        price = df["Close"].iloc[-1]
+        high52 = df['High'].tail(252).max() if len(df) > 252 else df['High'].max()
+        low52 = df['Low'].tail(252).min() if len(df) > 252 else df['Low'].min()
+        pos52 = (r['Close'] - low52) / (high52 - low52) * 100
         
-        # 52-Week Position (30 pts)
-        high_52w = df["High"].tail(252).max() if len(df) > 252 else df["High"].max()
-        low_52w = df["Low"].tail(252).min() if len(df) > 252 else df["Low"].min()
-        position_52w = (price - low_52w) / (high_52w - low_52w) * 100
-        
-        if position_52w < 25:
+        if pos52 < 25:
             score += 30
-            details["52W Position"] = f"✅ {position_52w:.1f}% SANGAT MURAH (+30)"
-        elif position_52w < 40:
+            det['52W Pos'] = f'✅ {pos52:.1f}% MURAH (+30)'
+        elif pos52 < 40:
             score += 20
-            details["52W Position"] = f"✅ {position_52w:.1f}% MURAH (+20)"
-        elif position_52w < 50:
-            score += 10
-            details["52W Position"] = f"⚠️ {position_52w:.1f}% Fair (+10)"
+            det['52W Pos'] = f'⚠️ {pos52:.1f}% (+20)'
         else:
-            details["52W Position"] = f"❌ {position_52w:.1f}% Mahal (+0)"
+            det['52W Pos'] = f'❌ {pos52:.1f}% (+0)'
         
-        # RSI Reversal (25 pts)
-        rsi = df["RSI"].iloc[-1]
-        if 25 < rsi < 40:
+        if 25 < r['RSI'] < 40:
             score += 25
-            details["RSI"] = f"✅ {rsi:.1f} Recovery zone (+25)"
-        elif 20 < rsi < 45:
-            score += 15
-            details["RSI"] = f"⚠️ {rsi:.1f} OK (+15)"
+            det['RSI'] = f"✅ {r['RSI']:.1f} (+25)"
         else:
-            details["RSI"] = f"❌ {rsi:.1f} Bad (+0)"
+            det['RSI'] = f"❌ {r['RSI']:.1f} (+0)"
         
-        # Volume Interest (20 pts)
-        vol_ma20 = df["Volume"].rolling(20).mean().iloc[-1]
-        recent_vol = df["Volume"].tail(5).mean()
-        vol_ratio = recent_vol / vol_ma20
-        
+        vol_ratio = df['Volume'].tail(5).mean() / df['Volume'].rolling(20).mean().iloc[-1]
         if vol_ratio > 1.5:
             score += 20
-            details["Volume"] = f"✅ {vol_ratio:.2f}x Interest muncul (+20)"
-        elif vol_ratio > 1.2:
-            score += 10
-            details["Volume"] = f"⚠️ {vol_ratio:.2f}x OK (+10)"
+            det['Volume'] = f'✅ {vol_ratio:.2f}x (+20)'
         else:
-            details["Volume"] = f"❌ {vol_ratio:.2f}x Low (+0)"
+            det['Volume'] = f'❌ {vol_ratio:.2f}x (+0)'
         
-        # Price Trend (15 pts)
-        sma20 = df["SMA20"].iloc[-1]
-        if price > sma20:
+        if r['Close'] > r['SMA20']:
             score += 15
-            details["Trend"] = "✅ Above SMA20 (+15)"
-        elif price > sma20 * 0.98:
-            score += 7
-            details["Trend"] = "⚠️ Near SMA20 (+7)"
+            det['Trend'] = '✅ Above SMA20 (+15)'
         else:
-            details["Trend"] = "❌ Below SMA20 (+0)"
+            det['Trend'] = '❌ Below SMA20 (+0)'
         
-        # Stability (10 pts)
-        volatility = df["Close"].pct_change().std() * 100
-        if volatility < 2.5:
+        vol_pct = df['Close'].pct_change().std() * 100
+        if vol_pct < 2.5:
             score += 10
-            details["Volatility"] = f"✅ {volatility:.2f}% Stable (+10)"
-        elif volatility < 4:
-            score += 5
-            details["Volatility"] = f"⚠️ {volatility:.2f}% OK (+5)"
+            det['Stability'] = f'✅ {vol_pct:.2f}% (+10)'
         else:
-            details["Volatility"] = f"❌ {volatility:.2f}% High (+0)"
+            det['Stability'] = f'❌ {vol_pct:.2f}% (+0)'
         
-        # Potential Gain
-        target = low_52w + (high_52w - low_52w) * 0.6
-        potential = (target - price) / price * 100
-        details["Potential"] = f"🎯 Target +{potential:.1f}% (ke 60% range)"
+        target = low52 + (high52 - low52) * 0.6
+        potential = (target - r['Close']) / r['Close'] * 100
+        det['Potential'] = f'🎯 +{potential:.1f}%'
         
-        return score, details
+        return score, det
     except:
         return 0, {}
 
-# ---------- BATCH SCANNER ----------
-def batch_scan(tickers, strategy, period, limit, use_api):
-    """Batch scan dengan strategy"""
+# ========== BATCH SCANNER ==========
+def batch_scan(tickers, strategy, period, limit):
+    """Scan multiple stocks"""
     results = []
     if limit:
         tickers = tickers[:limit]
@@ -558,11 +325,11 @@ def batch_scan(tickers, strategy, period, limit, use_api):
         status.text(f"📊 {i+1}/{total}: {ticker}")
         
         try:
-            df = fetch_data(ticker, period, use_api=use_api)
+            df = fetch_data(ticker, period)
             if df is None or len(df) < 50:
                 continue
             
-            price = float(df["Close"].iloc[-1])
+            price = float(df['Close'].iloc[-1])
             
             if strategy == "Full Screener":
                 score, details = score_full_screener(df)
@@ -591,7 +358,7 @@ def batch_scan(tickers, strategy, period, limit, use_api):
                 signal = phase
                 
             elif strategy == "Value":
-                score, details = score_value_hunting(df, ticker)
+                score, details = score_value(df)
                 signal = "VALUE BUY" if score >= 70 else "MONITOR"
                 phase = None
             
@@ -617,41 +384,176 @@ def batch_scan(tickers, strategy, period, limit, use_api):
     
     return pd.DataFrame(results).sort_values("Score", ascending=False)
 
-# ---------- HELPER ----------
-def load_tickers(path="idx_stocks.json"):
+# ========== LOAD TICKERS ==========
+def load_tickers():
     """Load ticker list"""
     try:
-        with open(path, "r") as f:
+        with open("idx_stocks.json", "r") as f:
             data = json.load(f)
         tickers = data.get("tickers", [])
         return [t if t.endswith(".JK") else f"{t}.JK" for t in tickers]
     except:
-        # Default fallback
         return ["BBCA.JK", "BBRI.JK", "BMRI.JK", "TLKM.JK", "ASII.JK"]
 
-# ---------- UI ----------
-st.markdown('<div class="big">🚀 IDX Power Screener</div>', unsafe_allow_html=True)
-st.markdown('<div class="subtitle">Professional Stock Screening System</div>', unsafe_allow_html=True)
+# ========== UI ==========
+st.markdown('<div class="big-title">🚀 IDX Power Screener</div>', unsafe_allow_html=True)
+st.markdown('<div class="subtitle">Professional Stock Screening System - 900+ Saham IDX</div>', unsafe_allow_html=True)
 
 tickers = load_tickers()
-st.info(f"📊 **{len(tickers)} tickers** loaded from IDX")
+st.success(f"✅ **{len(tickers)} saham** loaded dari IDX")
 
 # Sidebar
 with st.sidebar:
-    st.markdown("## ⚙️ Configuration")
-    
-    use_api = st.checkbox("🔧 Direct API Mode", value=True, 
-                          help="Recommended for mobile")
+    st.markdown("## ⚙️ Settings")
     
     menu = st.radio("📋 Menu", [
         "1️⃣ Full Screener",
-        "2️⃣ Single Stock Analysis",
-        "3️⃣ BPJS (Day Trading)",
-        "4️⃣ BSJP (Overnight)",
+        "2️⃣ Single Stock",
+        "3️⃣ BPJS",
+        "4️⃣ BSJP",
         "5️⃣ Bandar Tracking",
         "6️⃣ Value Hunting"
     ])
     
     st.markdown("---")
     
-    if "​​​​​​​​​​​​​​​​
+    if "Single" not in menu:
+        period = st.selectbox("Period", ["3mo", "6mo", "1y"], index=1)
+        limit = st.slider("Max Tickers", 10, 300, 100, step=10)
+        min_score = st.slider("Min Score", 0, 100, 60, step=5)
+    else:
+        period = st.selectbox("Period", ["3mo", "6mo", "1y"], index=1)
+        limit = None
+        min_score = None
+    
+    st.markdown("---")
+    st.caption("💡 Built for IDX traders")
+
+# ========== MAIN CONTENT ==========
+
+if "Single" in menu:
+    # SINGLE STOCK
+    st.markdown("### 📈 Single Stock Analysis")
+    
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        selected = st.selectbox("Pilih Saham", tickers, 
+                               index=tickers.index("BBCA.JK") if "BBCA.JK" in tickers else 0)
+    with col2:
+        analyze_btn = st.button("🔍 Analyze", type="primary")
+    
+    if analyze_btn:
+        with st.spinner(f"Analyzing {selected}..."):
+            df = fetch_data(selected, period)
+        
+        if df is None:
+            st.error("❌ Data tidak tersedia")
+        else:
+            price = float(df['Close'].iloc[-1])
+            
+            tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Chart", "⚡ BPJS", "🌙 BSJP", "🎯 Bandar", "💎 Value"])
+            
+            with tab1:
+                st.line_chart(df[['Close', 'EMA9', 'EMA21', 'EMA50']])
+                
+                col1, col2, col3, col4 = st.columns(4)
+                col1.metric("Price", f"Rp {price:,.0f}")
+                col2.metric("RSI", f"{df['RSI'].iloc[-1]:.1f}")
+                
+                change = (df['Close'].iloc[-1] - df['Close'].iloc[-2]) / df['Close'].iloc[-2] * 100
+                col3.metric("1D Change", f"{change:.2f}%")
+                
+                vol = df['Volume'].iloc[-1] / 1e6
+                col4.metric("Volume", f"{vol:.1f}M")
+            
+            with tab2:
+                st.markdown("#### ⚡ BPJS Analysis")
+                score, det = score_bpjs(df)
+                
+                if score >= 70:
+                    st.success(f"🟢 Score: {score}/100 - **BUY PAGI**")
+                    st.info(f"💡 Entry jam 09:15-10:00 | Target +2% | SL -1%")
+                else:
+                    st.warning(f"🟡 Score: {score}/100 - **WAIT**")
+                
+                for k, v in det.items():
+                    st.markdown(f"- {k}: {v}")
+            
+            with tab3:
+                st.markdown("#### 🌙 BSJP Analysis")
+                score, det = score_bsjp(df)
+                
+                if score >= 70:
+                    st.success(f"🟢 Score: {score}/100 - **BUY SORE**")
+                    st.info(f"💡 Entry jam 15:00-15:30 | Hold overnight | Jual pagi")
+                else:
+                    st.warning(f"🟡 Score: {score}/100 - **WAIT**")
+                
+                for k, v in det.items():
+                    st.markdown(f"- {k}: {v}")
+            
+            with tab4:
+                st.markdown("#### 🎯 Bandar Tracking")
+                score, det, phase = score_bandar(df)
+                
+                if "AKUMULASI" in phase or "MARKUP" in phase:
+                    st.success(f"🟢 Phase: **{phase}** (Score: {score}/100)")
+                else:
+                    st.error(f"🔴 Phase: **{phase}** (Score: {score}/100)")
+                
+                for k, v in det.items():
+                    st.markdown(f"- {k}: {v}")
+            
+            with tab5:
+                st.markdown("#### 💎 Value Hunting")
+                score, det = score_value(df)
+                
+                if score >= 70:
+                    st.success(f"🟢 Score: {score}/100 - **VALUE BUY**")
+                else:
+                    st.warning(f"🟡 Score: {score}/100 - **MONITOR**")
+                
+                for k, v in det.items():
+                    st.markdown(f"- {k}: {v}")
+
+else:
+    # SCREENER MODE
+    strategy_map = {
+        "1️⃣ Full Screener": "Full Screener",
+        "3️⃣ BPJS": "BPJS",
+        "4️⃣ BSJP": "BSJP",
+        "5️⃣ Bandar Tracking": "Bandar",
+        "6️⃣ Value Hunting": "Value"
+    }
+    
+    strategy = strategy_map[menu]
+    
+    st.markdown(f"### {menu}")
+    
+    if st.button("🚀 Run Screener", type="primary"):
+        df = batch_scan(tickers, strategy, period, limit)
+        
+        if df.empty:
+            st.warning("⚠️ No data. Try reducing Max Tickers or check internet connection.")
+        else:
+            df = df[df["Score"] >= min_score].head(50)
+            
+            if df.empty:
+                st.info(f"📊 No stocks with Score >= {min_score}. Lower the threshold.")
+            else:
+                st.success(f"✅ Found **{len(df)} stocks**!")
+                
+                show = df[["Ticker", "Price", "Score", "Signal"]]
+                st.dataframe(show, use_container_width=True, height=400)
+                
+                st.markdown(f"### 🏆 Top 5 - {strategy}")
+                for idx, row in df.head(5).iterrows():
+                    with st.expander(f"{row['Ticker']} - Score {row['Score']} ({row['Signal']})"):
+                        st.markdown(f"**Price:** Rp {row['Price']:,.0f}")
+                        st.markdown("**Analysis:**")
+                        for k, v in row['Details'].items():
+                            st.markdown(f"- {k}: {v}")
+                
+                csv = show.to_csv(index=False).encode()
+                st.download_button("📥 Download CSV", csv, 
+                                 f"{strategy}_{datetime.now().strftime('%Y%m%d')}.csv")
