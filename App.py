@@ -9,28 +9,30 @@ from datetime import datetime
 
 st.set_page_config(page_title="IDX Power Screener", page_icon="🚀", layout="wide")
 
-# ========== STYLING ==========
 st.markdown("""
 <style>
-.big-title {font-size:2.5rem;font-weight:800;color:#1e40af;margin-bottom:0.5rem}
+.big-title {font-size:2.5rem;font-weight:800;color:#1e40af}
 .subtitle {font-size:1.1rem;color:#64748b;margin-bottom:2rem}
+.signal-box {padding:1rem;border-radius:0.5rem;margin:1rem 0;font-weight:700;text-align:center}
+.strong-buy {background:#10b981;color:white}
+.buy {background:#34d399;color:white}
+.neutral {background:#fbbf24;color:white}
+.sell {background:#ef4444;color:white}
+.entry-card {background:#f0f9ff;padding:1rem;border-radius:0.5rem;border-left:4px solid #0ea5e9;margin:0.5rem 0}
 </style>
 """, unsafe_allow_html=True)
 
-# ========== DATA FETCHER ==========
 @st.cache_data(ttl=600, show_spinner=False)
 def fetch_data(ticker, period="6mo"):
-    """Fetch dari Yahoo Finance API"""
     try:
         end = int(datetime.now().timestamp())
-        days = {"5d": 5, "1mo": 30, "3mo": 90, "6mo": 180, "1y": 365}.get(period, 180)
-        start = end - (days * 86400)
+        days = {"5d":5,"1mo":30,"3mo":90,"6mo":180,"1y":365}.get(period,180)
+        start = end - (days*86400)
         
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
-        params = {"period1": start, "period2": end, "interval": "1d"}
-        headers = {'User-Agent': 'Mozilla/5.0'}
+        r = requests.get(url, params={"period1":start,"period2":end,"interval":"1d"}, 
+                        headers={'User-Agent':'Mozilla/5.0'}, timeout=15, verify=False)
         
-        r = requests.get(url, params=params, headers=headers, timeout=15, verify=False)
         if r.status_code != 200:
             return None
         
@@ -38,28 +40,23 @@ def fetch_data(ticker, period="6mo"):
         q = data['indicators']['quote'][0]
         
         df = pd.DataFrame({
-            'Open': q['open'],
-            'High': q['high'],
-            'Low': q['low'],
-            'Close': q['close'],
-            'Volume': q['volume']
+            'Open':q['open'],'High':q['high'],'Low':q['low'],
+            'Close':q['close'],'Volume':q['volume']
         }, index=pd.to_datetime(data['timestamp'], unit='s'))
         
         df = df.dropna()
         if len(df) < 20:
             return None
         
-        # Indicators
         df['EMA9'] = df['Close'].ewm(9).mean()
         df['EMA21'] = df['Close'].ewm(21).mean()
         df['EMA50'] = df['Close'].ewm(50).mean()
         df['SMA20'] = df['Close'].rolling(20).mean()
         
         delta = df['Close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-        rs = gain / loss
-        df['RSI'] = 100 - (100 / (1 + rs))
+        gain = (delta.where(delta>0,0)).rolling(14).mean()
+        loss = (-delta.where(delta<0,0)).rolling(14).mean()
+        df['RSI'] = 100 - (100/(1+gain/loss))
         
         exp1 = df['Close'].ewm(12).mean()
         exp2 = df['Close'].ewm(26).mean()
@@ -68,21 +65,74 @@ def fetch_data(ticker, period="6mo"):
         
         df['BB_MID'] = df['Close'].rolling(20).mean()
         df['BB_STD'] = df['Close'].rolling(20).std()
-        df['BB_UPPER'] = df['BB_MID'] + 2 * df['BB_STD']
-        df['BB_LOWER'] = df['BB_MID'] - 2 * df['BB_STD']
+        df['BB_UPPER'] = df['BB_MID'] + 2*df['BB_STD']
+        df['BB_LOWER'] = df['BB_MID'] - 2*df['BB_STD']
         
         low14 = df['Low'].rolling(14).min()
         high14 = df['High'].rolling(14).max()
-        df['STOCH'] = 100 * (df['Close'] - low14) / (high14 - low14)
+        df['STOCH'] = 100*(df['Close']-low14)/(high14-low14)
         
         return df
     except:
         return None
 
-# ========== SCORING FUNCTIONS ==========
+def get_signal_levels(score, price):
+    if score >= 80:
+        signal = "STRONG BUY"
+        signal_class = "strong-buy"
+        trend = "🟢 Strong Uptrend"
+        entry_ideal = round(price*0.97,0)
+        entry_aggr = round(price,0)
+        tp1_ideal = round(entry_ideal*1.10,0)
+        tp2_ideal = round(entry_ideal*1.15,0)
+        tp1_aggr = round(entry_aggr*1.08,0)
+        tp2_aggr = round(entry_aggr*1.12,0)
+        sl_ideal = round(entry_ideal*0.93,0)
+        sl_aggr = round(entry_aggr*0.93,0)
+    elif score >= 60:
+        signal = "BUY"
+        signal_class = "buy"
+        trend = "🟢 Uptrend"
+        entry_ideal = round(price*0.98,0)
+        entry_aggr = round(price,0)
+        tp1_ideal = round(entry_ideal*1.08,0)
+        tp2_ideal = round(entry_ideal*1.12,0)
+        tp1_aggr = round(entry_aggr*1.06,0)
+        tp2_aggr = round(entry_aggr*1.10,0)
+        sl_ideal = round(entry_ideal*0.95,0)
+        sl_aggr = round(entry_aggr*0.95,0)
+    elif score >= 40:
+        signal = "NEUTRAL"
+        signal_class = "neutral"
+        trend = "🟡 Sideways"
+        entry_ideal = round(price*0.95,0)
+        entry_aggr = None
+        tp1_ideal = round(entry_ideal*1.05,0)
+        tp2_ideal = round(entry_ideal*1.08,0)
+        tp1_aggr = None
+        tp2_aggr = None
+        sl_ideal = round(entry_ideal*0.97,0)
+        sl_aggr = None
+    else:
+        signal = "SELL/HOLD"
+        signal_class = "sell"
+        trend = "🔴 Downtrend"
+        entry_ideal = None
+        entry_aggr = None
+        tp1_ideal = None
+        tp2_ideal = None
+        tp1_aggr = None
+        tp2_aggr = None
+        sl_ideal = None
+        sl_aggr = None
+    
+    return {
+        "signal": signal, "signal_class": signal_class, "trend": trend,
+        "ideal": {"entry":entry_ideal,"tp1":tp1_ideal,"tp2":tp2_ideal,"sl":sl_ideal},
+        "aggr": {"entry":entry_aggr,"tp1":tp1_aggr,"tp2":tp2_aggr,"sl":sl_aggr}
+    }
 
 def score_full_screener(df):
-    """Full Technical Screener"""
     try:
         r = df.iloc[-1]
         score, det = 0, {}
@@ -112,13 +162,13 @@ def score_full_screener(df):
             det['MACD'] = '❌ Bearish (+0)'
         
         vol_avg = df['Volume'].rolling(20).mean().iloc[-1]
-        if r['Volume'] > vol_avg * 1.3:
+        if r['Volume'] > vol_avg*1.3:
             score += 10
             det['Volume'] = '✅ High (+10)'
         else:
             det['Volume'] = '❌ Low (+0)'
         
-        mom = (r['Close'] - df['Close'].iloc[-5]) / df['Close'].iloc[-5] * 100
+        mom = (r['Close']-df['Close'].iloc[-5])/df['Close'].iloc[-5]*100
         if 2 <= mom <= 15:
             score += 10
             det['Momentum'] = f'✅ {mom:.1f}% (+10)'
@@ -130,12 +180,11 @@ def score_full_screener(df):
         return 0, {}
 
 def score_bpjs(df):
-    """BPJS - Beli Pagi Jual Sore"""
     try:
         r = df.iloc[-1]
         score, det = 0, {}
         
-        vol_pct = ((df['High'] - df['Low']) / df['Low'] * 100).tail(5).mean()
+        vol_pct = ((df['High']-df['Low'])/df['Low']*100).tail(5).mean()
         if 2 < vol_pct < 5:
             score += 30
             det['Volatility'] = f'✅ {vol_pct:.2f}% (+30)'
@@ -143,7 +192,7 @@ def score_bpjs(df):
             det['Volatility'] = f'❌ {vol_pct:.2f}% (+0)'
         
         vol_avg = df['Volume'].rolling(20).mean().iloc[-1]
-        if r['Volume'] > vol_avg * 1.5:
+        if r['Volume'] > vol_avg*1.5:
             score += 25
             det['Volume'] = '✅ Surge (+25)'
         else:
@@ -166,19 +215,18 @@ def score_bpjs(df):
         return 0, {}
 
 def score_bsjp(df):
-    """BSJP - Beli Sore Jual Pagi"""
     try:
         r = df.iloc[-1]
         score, det = 0, {}
         
-        bb_pos = (r['Close'] - r['BB_LOWER']) / (r['BB_UPPER'] - r['BB_LOWER']) * 100
+        bb_pos = (r['Close']-r['BB_LOWER'])/(r['BB_UPPER']-r['BB_LOWER'])*100
         if bb_pos < 20:
             score += 30
             det['BB Position'] = f'✅ {bb_pos:.1f}% (+30)'
         else:
             det['BB Position'] = f'❌ {bb_pos:.1f}% (+0)'
         
-        gap = (r['Close'] - df['Close'].iloc[-2]) / df['Close'].iloc[-2] * 100
+        gap = (r['Close']-df['Close'].iloc[-2])/df['Close'].iloc[-2]*100
         if -1.5 < gap < 0:
             score += 25
             det['Gap'] = f'✅ {gap:.2f}% (+25)'
@@ -192,9 +240,9 @@ def score_bsjp(df):
             det['RSI'] = f"❌ {r['RSI']:.1f} (+0)"
         
         gains = []
-        for i in range(-5, -1):
+        for i in range(-5,-1):
             try:
-                gain = (df['Open'].iloc[i+1] - df['Close'].iloc[i]) / df['Close'].iloc[i] * 100
+                gain = (df['Open'].iloc[i+1]-df['Close'].iloc[i])/df['Close'].iloc[i]*100
                 gains.append(gain)
             except:
                 pass
@@ -210,61 +258,60 @@ def score_bsjp(df):
         return 0, {}
 
 def score_bandar(df):
-    """Bandar Tracking"""
     try:
         score, det = 0, {}
         
         obv = [0]
-        for i in range(1, len(df)):
+        for i in range(1,len(df)):
             if df['Close'].iloc[i] > df['Close'].iloc[i-1]:
-                obv.append(obv[-1] + df['Volume'].iloc[i])
+                obv.append(obv[-1]+df['Volume'].iloc[i])
             elif df['Close'].iloc[i] < df['Close'].iloc[i-1]:
-                obv.append(obv[-1] - df['Volume'].iloc[i])
+                obv.append(obv[-1]-df['Volume'].iloc[i])
             else:
                 obv.append(obv[-1])
         df['OBV'] = obv
         
-        vol_ratio = df['Volume'].tail(5).mean() / df['Volume'].rolling(20).mean().iloc[-1]
-        price_chg = (df['Close'].iloc[-1] - df['Close'].iloc[-20]) / df['Close'].iloc[-20] * 100
-        obv_trend = (df['OBV'].iloc[-1] - df['OBV'].iloc[-20]) / abs(df['OBV'].iloc[-20])
+        vol_ratio = df['Volume'].tail(5).mean()/df['Volume'].rolling(20).mean().iloc[-1]
+        price_chg = (df['Close'].iloc[-1]-df['Close'].iloc[-20])/df['Close'].iloc[-20]*100
+        obv_trend = (df['OBV'].iloc[-1]-df['OBV'].iloc[-20])/abs(df['OBV'].iloc[-20])
         
         if vol_ratio > 1.3 and price_chg > -2 and obv_trend > 0.1:
             phase = '🟢 AKUMULASI'
             score = 85
             det['Phase'] = 'AKUMULASI'
-            det['Action'] = '🚀 BUY'
+            det['Action'] = '🚀 BUY - Ikut bandar!'
         elif vol_ratio > 1.3 and price_chg < -3:
             phase = '🔴 DISTRIBUSI'
             score = 15
             det['Phase'] = 'DISTRIBUSI'
-            det['Action'] = '🛑 AVOID'
+            det['Action'] = '🛑 AVOID - Bandar jual'
         elif price_chg > 5:
             phase = '🚀 MARKUP'
             score = 90
             det['Phase'] = 'MARKUP'
-            det['Action'] = '🎯 HOLD'
+            det['Action'] = '🎯 HOLD - Ride trend'
         else:
             phase = '⚪ SIDEWAYS'
             score = 50
             det['Phase'] = 'SIDEWAYS'
-            det['Action'] = '⏸️ WAIT'
+            det['Action'] = '⏸️ WAIT - Tunggu breakout'
         
-        det['Volume'] = f'{vol_ratio:.2f}x'
-        det['Price'] = f'{price_chg:+.2f}%'
+        det['Volume'] = f'{vol_ratio:.2f}x avg'
+        det['Price'] = f'{price_chg:+.2f}% (20d)'
+        det['OBV'] = f"{'📈 Up' if obv_trend>0 else '📉 Down'}"
         
         return score, det, phase
     except:
         return 0, {}, 'UNKNOWN'
 
 def score_value(df):
-    """Value Hunting - Saham Murah"""
     try:
         r = df.iloc[-1]
         score, det = 0, {}
         
-        high52 = df['High'].tail(252).max() if len(df) > 252 else df['High'].max()
-        low52 = df['Low'].tail(252).min() if len(df) > 252 else df['Low'].min()
-        pos52 = (r['Close'] - low52) / (high52 - low52) * 100
+        high52 = df['High'].tail(252).max() if len(df)>252 else df['High'].max()
+        low52 = df['Low'].tail(252).min() if len(df)>252 else df['Low'].min()
+        pos52 = (r['Close']-low52)/(high52-low52)*100
         
         if pos52 < 25:
             score += 30
@@ -281,7 +328,7 @@ def score_value(df):
         else:
             det['RSI'] = f"❌ {r['RSI']:.1f} (+0)"
         
-        vol_ratio = df['Volume'].tail(5).mean() / df['Volume'].rolling(20).mean().iloc[-1]
+        vol_ratio = df['Volume'].tail(5).mean()/df['Volume'].rolling(20).mean().iloc[-1]
         if vol_ratio > 1.5:
             score += 20
             det['Volume'] = f'✅ {vol_ratio:.2f}x (+20)'
@@ -294,24 +341,22 @@ def score_value(df):
         else:
             det['Trend'] = '❌ Below SMA20 (+0)'
         
-        vol_pct = df['Close'].pct_change().std() * 100
+        vol_pct = df['Close'].pct_change().std()*100
         if vol_pct < 2.5:
             score += 10
             det['Stability'] = f'✅ {vol_pct:.2f}% (+10)'
         else:
             det['Stability'] = f'❌ {vol_pct:.2f}% (+0)'
         
-        target = low52 + (high52 - low52) * 0.6
-        potential = (target - r['Close']) / r['Close'] * 100
+        target = low52+(high52-low52)*0.6
+        potential = (target-r['Close'])/r['Close']*100
         det['Potential'] = f'🎯 +{potential:.1f}%'
         
         return score, det
     except:
         return 0, {}
 
-# ========== BATCH SCANNER ==========
 def batch_scan(tickers, strategy, period, limit):
-    """Scan multiple stocks"""
     results = []
     if limit:
         tickers = tickers[:limit]
@@ -321,7 +366,7 @@ def batch_scan(tickers, strategy, period, limit):
     total = len(tickers)
     
     for i, ticker in enumerate(tickers):
-        progress.progress((i + 1) / total)
+        progress.progress((i+1)/total)
         status.text(f"📊 {i+1}/{total}: {ticker}")
         
         try:
@@ -333,44 +378,30 @@ def batch_scan(tickers, strategy, period, limit):
             
             if strategy == "Full Screener":
                 score, details = score_full_screener(df)
-                if score >= 70:
-                    signal = "STRONG BUY"
-                elif score >= 60:
-                    signal = "BUY"
-                elif score >= 40:
-                    signal = "NEUTRAL"
-                else:
-                    signal = "SELL"
-                phase = None
-                
             elif strategy == "BPJS":
                 score, details = score_bpjs(df)
-                signal = "BUY PAGI" if score >= 70 else "WAIT"
-                phase = None
-                
             elif strategy == "BSJP":
                 score, details = score_bsjp(df)
-                signal = "BUY SORE" if score >= 70 else "WAIT"
-                phase = None
-                
             elif strategy == "Bandar":
                 score, details, phase = score_bandar(df)
-                signal = phase
-                
             elif strategy == "Value":
                 score, details = score_value(df)
-                signal = "VALUE BUY" if score >= 70 else "MONITOR"
-                phase = None
+            
+            levels = get_signal_levels(score, price)
             
             results.append({
                 "Ticker": ticker,
                 "Price": price,
                 "Score": score,
-                "Signal": signal,
-                "Phase": phase,
+                "Signal": levels["signal"],
+                "Trend": levels["trend"],
+                "EntryIdeal": levels["ideal"]["entry"],
+                "EntryAggr": levels["aggr"]["entry"],
+                "TP1": levels["ideal"]["tp1"],
+                "TP2": levels["ideal"]["tp2"],
+                "SL": levels["ideal"]["sl"],
                 "Details": details
             })
-            
         except:
             pass
         
@@ -384,28 +415,23 @@ def batch_scan(tickers, strategy, period, limit):
     
     return pd.DataFrame(results).sort_values("Score", ascending=False)
 
-# ========== LOAD TICKERS ==========
 def load_tickers():
-    """Load ticker list"""
     try:
-        with open("idx_stocks.json", "r") as f:
+        with open("idx_stocks.json","r") as f:
             data = json.load(f)
-        tickers = data.get("tickers", [])
+        tickers = data.get("tickers",[])
         return [t if t.endswith(".JK") else f"{t}.JK" for t in tickers]
     except:
-        return ["BBCA.JK", "BBRI.JK", "BMRI.JK", "TLKM.JK", "ASII.JK"]
+        return ["BBCA.JK","BBRI.JK","BMRI.JK","TLKM.JK","ASII.JK"]
 
-# ========== UI ==========
 st.markdown('<div class="big-title">🚀 IDX Power Screener</div>', unsafe_allow_html=True)
-st.markdown('<div class="subtitle">Professional Stock Screening System - 900+ Saham IDX</div>', unsafe_allow_html=True)
+st.markdown('<div class="subtitle">Professional Stock Screening - 900+ Saham IDX</div>', unsafe_allow_html=True)
 
 tickers = load_tickers()
-st.success(f"✅ **{len(tickers)} saham** loaded dari IDX")
+st.success(f"✅ **{len(tickers)} saham** loaded")
 
-# Sidebar
 with st.sidebar:
     st.markdown("## ⚙️ Settings")
-    
     menu = st.radio("📋 Menu", [
         "1️⃣ Full Screener",
         "2️⃣ Single Stock",
@@ -414,28 +440,22 @@ with st.sidebar:
         "5️⃣ Bandar Tracking",
         "6️⃣ Value Hunting"
     ])
-    
     st.markdown("---")
     
     if "Single" not in menu:
-        period = st.selectbox("Period", ["3mo", "6mo", "1y"], index=1)
+        period = st.selectbox("Period", ["3mo","6mo","1y"], index=1)
         limit = st.slider("Max Tickers", 10, 300, 100, step=10)
         min_score = st.slider("Min Score", 0, 100, 60, step=5)
     else:
-        period = st.selectbox("Period", ["3mo", "6mo", "1y"], index=1)
-        limit = None
-        min_score = None
+        period = st.selectbox("Period", ["3mo","6mo","1y"], index=1)
     
     st.markdown("---")
-    st.caption("💡 Built for IDX traders")
-
-# ========== MAIN CONTENT ==========
+    st.caption("💡 IDX Traders")
 
 if "Single" in menu:
-    # SINGLE STOCK
     st.markdown("### 📈 Single Stock Analysis")
     
-    col1, col2 = st.columns([3, 1])
+    col1, col2 = st.columns([3,1])
     with col1:
         selected = st.selectbox("Pilih Saham", tickers, 
                                index=tickers.index("BBCA.JK") if "BBCA.JK" in tickers else 0)
@@ -451,43 +471,79 @@ if "Single" in menu:
         else:
             price = float(df['Close'].iloc[-1])
             
-            tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Chart", "⚡ BPJS", "🌙 BSJP", "🎯 Bandar", "💎 Value"])
+            tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Overview","⚡ BPJS","🌙 BSJP","🎯 Bandar","💎 Value"])
             
             with tab1:
-                st.line_chart(df[['Close', 'EMA9', 'EMA21', 'EMA50']])
+                score, det = score_full_screener(df)
+                levels = get_signal_levels(score, price)
                 
-                col1, col2, col3, col4 = st.columns(4)
+                col1, col2, col3 = st.columns(3)
                 col1.metric("Price", f"Rp {price:,.0f}")
-                col2.metric("RSI", f"{df['RSI'].iloc[-1]:.1f}")
+                col2.metric("Score", f"{score}/100")
+                col3.markdown(f'<div class="signal-box {levels["signal_class"]}">{levels["signal"]}</div>', unsafe_allow_html=True)
                 
-                change = (df['Close'].iloc[-1] - df['Close'].iloc[-2]) / df['Close'].iloc[-2] * 100
-                col3.metric("1D Change", f"{change:.2f}%")
+                st.markdown(f"**Trend:** {levels['trend']}")
                 
-                vol = df['Volume'].iloc[-1] / 1e6
-                col4.metric("Volume", f"{vol:.1f}M")
+                st.line_chart(df[['Close','EMA9','EMA21','EMA50']])
+                
+                if levels["ideal"]["entry"]:
+                    st.markdown("### 🎯 Entry & Exit Strategy")
+                    
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.markdown("#### 💎 Ideal Entry")
+                        st.markdown(f"""
+                        <div class="entry-card">
+                        <strong>Entry:</strong> Rp {levels["ideal"]["entry"]:,.0f}<br>
+                        <strong>TP1:</strong> Rp {levels["ideal"]["tp1"]:,.0f} (+{((levels["ideal"]["tp1"]/levels["ideal"]["entry"]-1)*100):.1f}%)<br>
+                        <strong>TP2:</strong> Rp {levels["ideal"]["tp2"]:,.0f} (+{((levels["ideal"]["tp2"]/levels["ideal"]["entry"]-1)*100):.1f}%)<br>
+                        <strong>SL:</strong> Rp {levels["ideal"]["sl"]:,.0f} (-{((1-levels["ideal"]["sl"]/levels["ideal"]["entry"])*100):.1f}%)
+                        </div>
+                        """, unsafe_allow_html=True)
+                    
+                    with col2:
+                        if levels["aggr"]["entry"]:
+                            st.markdown("#### ⚡ Aggressive")
+                            st.markdown(f"""
+                            <div class="entry-card">
+                            <strong>Entry:</strong> Rp {levels["aggr"]["entry"]:,.0f} (NOW)<br>
+                            <strong>TP1:</strong> Rp {levels["aggr"]["tp1"]:,.0f} (+{((levels["aggr"]["tp1"]/levels["aggr"]["entry"]-1)*100):.1f}%)<br>
+                            <strong>TP2:</strong> Rp {levels["aggr"]["tp2"]:,.0f} (+{((levels["aggr"]["tp2"]/levels["aggr"]["entry"]-1)*100):.1f}%)<br>
+                            <strong>SL:</strong> Rp {levels["aggr"]["sl"]:,.0f} (-{((1-levels["aggr"]["sl"]/levels["aggr"]["entry"])*100):.1f}%)
+                            </div>
+                            """, unsafe_allow_html=True)
+                        else:
+                            st.warning("⚠️ Wait for dip!")
+                else:
+                    st.warning("⚠️ **NO ENTRY** - Wait for better setup")
+                
+                st.markdown("### 📊 Analysis")
+                for k, v in det.items():
+                    st.markdown(f"- **{k}:** {v}")
             
             with tab2:
-                st.markdown("#### ⚡ BPJS Analysis")
+                st.markdown("#### ⚡ BPJS (Day Trading)")
                 score, det = score_bpjs(df)
                 
                 if score >= 70:
-                    st.success(f"🟢 Score: {score}/100 - **BUY PAGI**")
-                    st.info(f"💡 Entry jam 09:15-10:00 | Target +2% | SL -1%")
+                    st.success(f"🟢 {score}/100 - **BUY PAGI**")
+                    st.info(f"Entry: 09:15-10:00 @ Rp {price:,.0f} | TP: +2% | SL: -1% | Exit: 14:00-15:00")
                 else:
-                    st.warning(f"🟡 Score: {score}/100 - **WAIT**")
+                    st.warning(f"🟡 {score}/100 - **WAIT**")
                 
                 for k, v in det.items():
                     st.markdown(f"- {k}: {v}")
             
             with tab3:
-                st.markdown("#### 🌙 BSJP Analysis")
+                st.markdown("#### 🌙 BSJP (Overnight)")
                 score, det = score_bsjp(df)
                 
                 if score >= 70:
-                    st.success(f"🟢 Score: {score}/100 - **BUY SORE**")
-                    st.info(f"💡 Entry jam 15:00-15:30 | Hold overnight | Jual pagi")
+                    st.success(f"🟢 {score}/100 - **BUY SORE**")
+                    st.info(f"Entry: 15:00-15:30 @ Rp {price:,.0f} | Hold overnight | Exit: 09:00-10:00")
                 else:
-                    st.warning(f"🟡 Score: {score}/100 - **WAIT**")
+                    st.warning(f"🟡 {score}/100 - **WAIT**")
                 
                 for k, v in det.items():
                     st.markdown(f"- {k}: {v}")
@@ -497,9 +553,11 @@ if "Single" in menu:
                 score, det, phase = score_bandar(df)
                 
                 if "AKUMULASI" in phase or "MARKUP" in phase:
-                    st.success(f"🟢 Phase: **{phase}** (Score: {score}/100)")
+                    st.success(f"🟢 {phase} ({score}/100)")
+                elif "DISTRIBUSI" in phase:
+                    st.error(f"🔴 {phase} ({score}/100)")
                 else:
-                    st.error(f"🔴 Phase: **{phase}** (Score: {score}/100)")
+                    st.warning(f"🟡 {phase} ({score}/100)")
                 
                 for k, v in det.items():
                     st.markdown(f"- {k}: {v}")
@@ -509,15 +567,14 @@ if "Single" in menu:
                 score, det = score_value(df)
                 
                 if score >= 70:
-                    st.success(f"🟢 Score: {score}/100 - **VALUE BUY**")
+                    st.success(f"🟢 {score}/100 - **VALUE BUY**")
                 else:
-                    st.warning(f"🟡 Score: {score}/100 - **MONITOR**")
+                    st.warning(f"🟡 {score}/100 - **MONITOR**")
                 
                 for k, v in det.items():
                     st.markdown(f"- {k}: {v}")
 
 else:
-    # SCREENER MODE
     strategy_map = {
         "1️⃣ Full Screener": "Full Screener",
         "3️⃣ BPJS": "BPJS",
@@ -527,33 +584,37 @@ else:
     }
     
     strategy = strategy_map[menu]
-    
     st.markdown(f"### {menu}")
     
     if st.button("🚀 Run Screener", type="primary"):
         df = batch_scan(tickers, strategy, period, limit)
         
         if df.empty:
-            st.warning("⚠️ No data. Try reducing Max Tickers or check internet connection.")
+            st.warning("⚠️ No data")
         else:
             df = df[df["Score"] >= min_score].head(50)
             
             if df.empty:
-                st.info(f"📊 No stocks with Score >= {min_score}. Lower the threshold.")
+                st.info(f"No stocks with Score >= {min_score}")
             else:
-                st.success(f"✅ Found **{len(df)} stocks**!")
+                st.success(f"✅ **{len(df)} stocks** found!")
                 
-                show = df[["Ticker", "Price", "Score", "Signal"]]
+                show = df[["Ticker","Price","Score","Signal","Trend","EntryIdeal","TP1","TP2","SL"]]
                 st.dataframe(show, use_container_width=True, height=400)
                 
-                st.markdown(f"### 🏆 Top 5 - {strategy}")
+                st.markdown(f"### 🏆 Top 5")
                 for idx, row in df.head(5).iterrows():
-                    with st.expander(f"{row['Ticker']} - Score {row['Score']} ({row['Signal']})"):
+                    with st.expander(f"{row['Ticker']} - {row['Score']} ({row['Signal']})"):
                         st.markdown(f"**Price:** Rp {row['Price']:,.0f}")
-                        st.markdown("**Analysis:**")
+                        st.markdown(f"**Signal:** {row['Signal']}")
+                        st.markdown(f"**Trend:** {row['Trend']}")
+                        if row['EntryIdeal']:
+                            st.markdown(f"**Entry Ideal:** Rp {row['EntryIdeal']:,.0f}")
+                            st.markdown(f"**TP1:** Rp {row['TP1']:,.0f} | **TP2:** Rp {row['TP2']:,.0f}")
+                            st.markdown(f"**Stop Loss:** Rp {row['SL']:,.0f}")
+                        st.markdown("**Details:**")
                         for k, v in row['Details'].items():
                             st.markdown(f"- {k}: {v}")
                 
                 csv = show.to_csv(index=False).encode()
-                st.download_button("📥 Download CSV", csv, 
-                                 f"{strategy}_{datetime.now().strftime('%Y%m%d')}.csv")
+                st.download_button("📥 CSV", csv, f"{strategy}_{datetime.now().strftime('%Y%m%d')}.csv")
