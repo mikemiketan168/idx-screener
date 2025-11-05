@@ -636,7 +636,7 @@ elif "Single" in menu:
             col2.metric("Score", f"{score}/100")
             col3.metric("Confidence", f"{conf}%")
             
-            st.markdown st.markdown(f"### {levels['trend']}")
+            st.markdown(f"### {levels['trend']}")  # ← Fix: cuma 1 st.markdown
             
             for k, v in details.items():
                 if '⛔' in k:
@@ -656,7 +656,7 @@ elif "Single" in menu:
                     **TP2:** Rp {levels['ideal']['tp2']:,.0f}
                     **SL:** Rp {levels['ideal']['sl']:,.0f}
                     """)
-
+                    
 elif "Track" in menu:
     st.markdown("### 📊 Performance Tracking")
     stats = get_performance_stats()
