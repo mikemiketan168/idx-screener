@@ -1037,20 +1037,69 @@ def process_ticker(ticker, strategy, period):
         
         price = float(df['Close'].iloc[-1])
         
+        # Run appropriate strategy scoring
         if strategy == "BPJS":
             score, details, confidence = score_bpjs_v3(df)
+            bandar_phase = "N/A"
         elif strategy == "BSJP":
             score, details, confidence = score_bsjp_v3(df)
+            bandar_phase = "N/A"
         elif strategy == "Bandar":
             score, details, phase, confidence = score_bandar_v3(df)
             details['Phase'] = phase
+            bandar_phase = phase
         elif strategy == "Value":
             score, details, confidence = score_value_v3(df)
-        else:
+            bandar_phase = "N/A"
+        else:  # Full Screener
             score, details, confidence = score_full_screener_v3(df)
+            
+            # NEW: Add Bandar check for Full Screener
+            band_score, band_details, bandar_phase, band_conf = score_bandar_v3(df)
+            
+            # Add warnings if Bandar phase is bad
+            warnings = []
+            if '⚫' in bandar_phase:  # MARKDOWN
+                warnings.append("⚫ MARKDOWN")
+            elif '🔴' in bandar_phase:  # DISTRIBUSI
+                warnings.append("🔴 DISTRIBUSI")
+            
+            # Optional: Check 1MO timeframe for conflicts
+            try:
+                df_1mo = fetch_data(ticker, "1mo")
+                if df_1mo is not None and len(df_1mo) >= 50:
+                    score_1mo, _, conf_1mo = score_full_screener_v3(df_1mo)
+                    if score_1mo < 50 and score > 75:
+                        warnings.append("⚠️ TF_CONFLICT")
+            except:
+                pass
+            
+            # Add warnings to details
+            if warnings:
+                details['⚠️ Warnings'] = " | ".join(warnings)
         
         if score == 0:
             return None
+        
+        levels = get_signal_levels(score, price, confidence)
+        
+        return {
+            "Ticker": ticker, 
+            "Price": price, 
+            "Score": score, 
+            "Confidence": confidence,
+            "Signal": levels["signal"], 
+            "Trend": levels["trend"],
+            "Bandar": bandar_phase,  # NEW: Add Bandar phase
+            "EntryIdeal": levels["ideal"]["entry"], 
+            "EntryAggr": levels["aggr"]["entry"],
+            "TP1": levels["ideal"]["tp1"], 
+            "TP2": levels["ideal"]["tp2"],
+            "SL": levels["ideal"]["sl"], 
+            "Details": details
+        }
+    except:
+        return None
         
         levels = get_signal_levels(score, price, confidence)
         
@@ -2460,23 +2509,70 @@ else:  # Full Screener
             else:
                 st.success(f"✅ Found {len(df)} quality opportunities!")
                 
-                col1, col2, col3, col4 = st.columns(4)
-                col1.metric("Avg Score", f"{df['Score'].mean():.1f}/100")
-                col2.metric("Avg Confidence", f"{df['Confidence'].mean():.1f}%")
-                col3.metric("Strong Buy", len(df[df['Signal'] == 'STRONG BUY']))
-                col4.metric("Buy", len(df[df['Signal'] == 'BUY']))
+                # NEW: Bandar Phase Filter
+                st.markdown("---")
+                st.markdown("### 🎯 Filter by Bandar Phase")
                 
-                show = df[["Ticker","Price","Score","Confidence","Signal","Trend","EntryIdeal","TP1","TP2","SL"]]
-                st.dataframe(show, use_container_width=True, height=400)
+                col1, col2, col3, col4, col5 = st.columns(5)
+                show_all = col1.checkbox("Show All", value=True)
+                show_akum = col2.checkbox("🟢 Akumulasi", value=True)
+                show_markup = col3.checkbox("🚀 Markup", value=True)
+                show_side = col4.checkbox("⚪ Sideways", value=True)
+                hide_bad = col5.checkbox("❌ Hide MARKDOWN/DISTRIBUSI", value=True)
+                
+                # Apply filters
+                filtered_df = df.copy()
+                
+                if not show_all:
+                    # Filter by phase
+                    phase_filters = []
+                    if show_akum:
+                        phase_filters.append('🟢 AKUMULASI')
+                    if show_markup:
+                        phase_filters.append('🚀 MARKUP')
+                    if show_side:
+                        phase_filters.append('⚪ SIDEWAYS')
+                    
+                    if phase_filters:
+                        filtered_df = filtered_df[filtered_df['Bandar'].isin(phase_filters)]
+                
+                # Hide bad phases
+                if hide_bad:
+                    filtered_df = filtered_df[~filtered_df['Bandar'].str.contains('⚫|🔴', na=False)]
+                
+                # Show phase distribution
+                col1, col2, col3, col4 = st.columns(4)
+                akum_count = len(df[df['Bandar'].str.contains('🟢', na=False)])
+                markup_count = len(df[df['Bandar'].str.contains('🚀', na=False)])
+                bad_count = len(df[df['Bandar'].str.contains('⚫|🔴', na=False)])
+                side_count = len(df[df['Bandar'].str.contains('⚪', na=False)])
+                
+                col1.metric("🟢 Akumulasi", akum_count, delta="BUY ZONE!" if akum_count > 0 else None)
+                col2.metric("🚀 Markup", markup_count, delta="HOLD ZONE" if markup_count > 0 else None)
+                col3.metric("❌ Bad Phases", bad_count, delta="AVOID!" if bad_count > 0 else None, delta_color="inverse")
+                col4.metric("⚪ Sideways", side_count)
+                
+                # Use filtered dataframe
+                df = filtered_df
+                
+                if df.empty:
+                    st.warning("No stocks match selected filters")
+                else:
+                    st.success(f"✅ Showing {len(df)} stocks after filters")
+                
+                # Show with Bandar column
+                show = df[["Ticker","Price","Score","Confidence","Signal","Trend","Bandar","EntryIdeal","TP1","TP2","SL"]]
+                    st.dataframe(show, use_container_width=True, height=400)
                 
                 st.markdown("### 🏆 Top 15 Recommendations")
                 
                 for _, row in df.head(15).iterrows():
                     conf_color = "🟢" if row['Confidence'] >= 80 else "🟡" if row['Confidence'] >= 60 else "🟠"
                     
-                    with st.expander(f"{conf_color} {row['Ticker']} - {row['Score']} | {row['Confidence']}% | {row['Signal']}"):
-                        col1, col2 = st.columns(2)
-                        
+                    # Add Bandar phase to expander title
+                    bandar_emoji = "🟢" if "🟢" in str(row['Bandar']) else "🚀" if "🚀" in str(row['Bandar']) else "⚫" if "⚫" in str(row['Bandar']) else "🔴" if "🔴" in str(row['Bandar']) else "⚪"
+                    
+                    with st.expander(f"{conf_color} {row['Ticker']} - Score: {row['Score']} | Conf: {row['Confidence']}% | {row['Signal']} | {bandar_emoji} {row['Bandar']}"):
                         with col1:
                             st.markdown(f"**💰 Price:** Rp {row['Price']:,.0f}")
                             st.markdown(f"**📊 Score:** {row['Score']}/100")
