@@ -1176,7 +1176,6 @@ if "Test" in menu:
                         st.info(f"**{k}:** {v}")
             else:
                 st.error(f"❌ {ticker} - Failed to fetch data")
-
 elif "Single" in menu:
     st.markdown("### 📈 Single Stock Analysis + Multi-Timeframe")
     
@@ -1207,7 +1206,7 @@ elif "Single" in menu:
                 col1.metric("💰 Price", f"Rp {price:,.0f}")
                 col2.metric("📊 Score", f"{score}/100")
                 col3.metric("🎯 Confidence", f"{conf}%")
-                col4.metric("🎯 Bandar Phase", band_phase.split()[1] if len(band_phase.split()) > 1 else band_phase)
+                col4.metric("🎯 Bandar", band_phase.split()[1] if len(band_phase.split()) > 1 else band_phase)
                 
                 # Multi-timeframe analysis
                 if analyze_mtf:
@@ -1217,7 +1216,6 @@ elif "Single" in menu:
                     with st.spinner("Analyzing multiple timeframes..."):
                         mtf_results, mtf_verdict = analyze_multi_timeframe(selected)
                     
-                    # Verdict
                     if "STRONG BUY" in mtf_verdict:
                         st.success(mtf_verdict)
                     elif "BUY" in mtf_verdict:
@@ -1225,7 +1223,6 @@ elif "Single" in menu:
                     else:
                         st.warning(mtf_verdict)
                     
-                    # Display each timeframe
                     col1, col2, col3 = st.columns(3)
                     
                     for i, (tf, data) in enumerate(mtf_results.items()):
@@ -1265,32 +1262,12 @@ elif "Single" in menu:
                             else:
                                 strength_color = "🟢" if s['strength'] == "STRONG" else "🟡" if s['strength'] == "MEDIUM" else "⚪"
                                 st.success(f"{strength_color} **S{sr_data['supports'].index(s)+1}:** Rp {s['level']:,.0f} ({s['strength']}) - {s['distance_pct']:+.1f}%")
-                    
-                    # Trading plan based on S/R
-                    st.markdown("---")
-                    st.markdown("### 🎯 S/R Based Trading Plan")
-                    
-                    nearest_support = sr_data['supports'][0] if sr_data['supports'] else None
-                    nearest_resistance = sr_data['resistances'][0] if sr_data['resistances'] else None
-                    
-                    if nearest_support and nearest_resistance:
-                        entry_zone = nearest_support['level']
-                        target_zone = nearest_resistance['level']
-                        sl_zone = entry_zone * 0.96
-                        
-                        risk_reward = (target_zone - entry_zone) / (entry_zone - sl_zone) if (entry_zone - sl_zone) > 0 else 0
-                        
-                        st.info(f"""
-                        **Optimal Entry:** Near support at Rp {entry_zone:,.0f}
-                        **Target:** Resistance at Rp {target_zone:,.0f} ({((target_zone-entry_zone)/entry_zone*100):+.1f}%)
-                        **Stop Loss:** Below support at Rp {sl_zone:,.0f}
-                        **Risk:Reward:** 1:{risk_reward:.2f} {'✅' if risk_reward >= 2 else '⚠️'}
-                        """)
                 
                 # Bandar Analysis
                 st.markdown("---")
                 st.markdown("### 🎯 Bandar / Smart Money Analysis")
                 
+                # Display phase with color
                 if '🟢' in band_phase:
                     st.markdown(f'<div class="phase-akum">{band_phase}</div>', unsafe_allow_html=True)
                 elif '🚀' in band_phase:
@@ -1300,42 +1277,21 @@ elif "Single" in menu:
                 else:
                     st.markdown(f'<div class="phase-side">{band_phase}</div>', unsafe_allow_html=True)
                 
-                col1, col2 = st.columns(2)
-                
-                # Split bandar details into 2 columns
-                details_list = list(band_details.items())
-                mid_point = len(details_list) // 2
-                
-                with col1:
-                    for k, v in details_list[:mid_point]:
-                        if 'Action' in k:
+                # Display all bandar details
+                for k, v in band_details.items():
+                    if 'Action' in k or 'BUY' in str(v):
+                        st.success(f"**{k}:** {v}")
+                    elif 'SELL' in str(v) or 'AVOID' in str(v) or 'DANGER' in str(v):
+                        st.error(f"**{k}:** {v}")
+                    elif 'Risk' in k:
+                        if 'LOW' in str(v):
                             st.success(f"**{k}:** {v}")
-                        elif 'Risk' in k:
-                            if 'LOW' in str(v):
-                                st.success(f"**{k}:** {v}")
-                            elif 'HIGH' in str(v):
-                                st.error(f"**{k}:** {v}")
-                            else:
-                                st.warning(f"**{k}:** {v}")
-                        else:
-                            st.info(f"**{k}:** {v}")
-                
-                with col2:
-                    for k, v in details_list[mid_point:]:
-                        if 'Target' in k:
-                            st.success(f"**{k}:** {v}")
-                        elif 'DANGER' in str(v) or 'AVOID' in str(v):
+                        elif 'HIGH' in str(v):
                             st.error(f"**{k}:** {v}")
                         else:
-                            st.info(f"**{k}:** {v}")
-                with col2:
-                    for k, v in list(band_details.items() for k, v in list(band_details.items())[len(band_details)//2:]:
-                        if 'Target' in k:
-                            st.success(f"**{k}:** {v}")
-                        elif 'DANGER' in str(v) or 'AVOID' in str(v):
-                            st.error(f"**{k}:** {v}")
-                        else:
-                            st.info(f"**{k}:** {v}")
+                            st.warning(f"**{k}:** {v}")
+                    else:
+                        st.info(f"**{k}:** {v}")
                 
                 # Technical Details
                 st.markdown("---")
@@ -1359,7 +1315,7 @@ elif "Single" in menu:
                     col1, col2 = st.columns(2)
                     
                     with col1:
-                        st.markdown("**📍 Conservative Entry (Wait for dip)**")
+                        st.markdown("**📍 Conservative Entry**")
                         st.info(f"""
                         **Entry:** Rp {levels['ideal']['entry']:,.0f}
                         **TP1 (8%):** Rp {levels['ideal']['tp1']:,.0f}
@@ -1373,43 +1329,42 @@ elif "Single" in menu:
                     
                     with col2:
                         if levels['aggr']['entry']:
-                            st.markdown("**⚡ Aggressive Entry (Now)**")
+                            st.markdown("**⚡ Aggressive Entry**")
                             st.warning(f"""
                             **Entry:** Rp {levels['aggr']['entry']:,.0f}
-                            **TP1 (8%):** Rp {levels['ideal']['tp1']:,.0f}
-                            **TP2 (15%):** Rp {levels['ideal']['tp2']:,.0f}
-                            **Stop Loss:** Rp {levels['aggr']['sl']:,.0f}
+                            **TP1:** Rp {levels['ideal']['tp1']:,.0f}
+                            **TP2:** Rp {levels['ideal']['tp2']:,.0f}
+                            **SL:** Rp {levels['aggr']['sl']:,.0f}
                             """)
                         else:
-                            st.info("⏳ Wait for better entry point")
+                            st.info("⏳ Wait for pullback")
                     
                     # 3-lot strategy
                     st.markdown("### 📊 3-Lot Position Management")
                     three_lot = calculate_three_lot_strategy(levels['ideal']['entry'])
                     
                     st.success(f"""
-                    **Position Sizing: Split into 3 equal lots**
+                    **Split into 3 equal lots:**
                     
                     🎯 **Lot 1/3:** Sell at Rp {three_lot['lot1_tp']:,.0f} (+8%)
                     🎯 **Lot 2/3:** Sell at Rp {three_lot['lot2_tp']:,.0f} (+15%)
-                    🏃 **Lot 3/3:** {three_lot['lot3_trail']} (Let it run!)
+                    🏃 **Lot 3/3:** {three_lot['lot3_trail']}
                     
-                    🛑 **Initial SL:** Rp {three_lot['initial_sl']:,.0f} for ALL lots
+                    🛑 **Initial SL:** Rp {three_lot['initial_sl']:,.0f}
                     """)
                     
-                    # Position size calculator
+                    # Position size
                     if account > 0:
                         pos_calc = calculate_position_size(account, risk_pct, 
                                                           levels['ideal']['entry'], 
                                                           levels['ideal']['sl'])
                         if pos_calc:
-                            st.markdown("### 💰 Recommended Position Size")
+                            st.markdown("### 💰 Position Size")
                             col1, col2, col3 = st.columns(3)
                             col1.metric("Shares", f"{pos_calc['shares']:,}")
-                            col2.metric("Position Value", f"Rp {pos_calc['position_value']:,.0f}")
-                            col3.metric("Position %", f"{pos_calc['position_pct']:.1f}%")
-                            
-                            st.caption(f"💵 Risk Amount: Rp {pos_calc['risk_amount']:,.0f} ({risk_pct}%)")
+                            col2.metric("Value", f"Rp {pos_calc['position_value']:,.0f}")
+                            col3.metric("% Portfolio", f"{pos_calc['position_pct']:.1f}%")
+                            st.caption(f"💵 Risk: Rp {pos_calc['risk_amount']:,.0f} ({risk_pct}%)")
                 
                 # Score breakdown
                 display_score_breakdown(details, score, conf)
@@ -1417,15 +1372,15 @@ elif "Single" in menu:
                 # Action buttons
                 st.markdown("---")
                 col1, col2 = st.columns(2)
-                if col1.button("💾 Track This Position", use_container_width=True):
-                    save_recommendation(selected.replace('.JK',''), "Single Stock + Multi-TF", 
+                if col1.button("💾 Track Position", use_container_width=True):
+                    save_recommendation(selected.replace('.JK',''), "Single Stock", 
                                       score, conf, price, levels['signal'])
-                    st.success("✅ Added to Active Positions!")
+                    st.success("✅ Tracked!")
                     
                 if col2.button("🔖 Add to Watchlist", use_container_width=True):
                     add_to_watchlist(selected.replace('.JK',''), "Single Stock",
                                     score, conf, levels['ideal']['entry'] if levels['ideal']['entry'] else price)
-                    st.success("✅ Added to watchlist!")
+                    st.success("✅ Watchlisted!")
 
 elif "Watchlist" in menu:
     st.markdown("### 🔖 Watchlist")
