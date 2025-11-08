@@ -2409,7 +2409,7 @@ elif "BPJS" in menu or "BSJP" in menu or "Value" in menu:
                 col3.metric("Strong Buy", len(df[df['Signal'] == 'STRONG BUY']))
                 col4.metric("Buy", len(df[df['Signal'] == 'BUY']))
                 
-                show = df[["Ticker","Price","Score","Confidence","Signal","EntryIdeal","TP1","TP2","SL"]]
+                show = df[["Ticker","Price","Score","Confidence","Signal","Trend","Bandar","EntryIdeal","TP1","TP2","SL"]]
                 st.dataframe(show, use_container_width=True, height=400)
                 
                 st.markdown(f"### 🏆 Top {min(15, len(df))} Recommendations")
@@ -2556,6 +2556,12 @@ else:  # Full Screener
                             st.markdown(f"**🎯 Confidence:** {row['Confidence']}%")
                             st.markdown(f"**📈 Signal:** {row['Signal']}")
                             st.markdown(f"**🔄 Trend:** {row['Trend']}")
+                            st.markdown(f"**🎯 Bandar:** {row['Bandar']}")
+    
+                            if '⚫' in str(row['Bandar']):
+                                st.error("⚠️ MARKDOWN - Hati-hati!")
+                            elif '🔴' in str(row['Bandar']):
+                                st.error("⚠️ DISTRIBUSI - Jangan masuk!")
                         
                         with col2:
                             if row['EntryIdeal']:
