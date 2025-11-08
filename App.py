@@ -5,11 +5,13 @@ import numpy as np
 import json
 import time
 import requests
-from datetime import datetime, timedelta, timezone, time as dt_time
+from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import sqlite3
+import warnings
+warnings.filterwarnings('ignore')
 
-st.set_page_config(page_title="IDX Power Screener v3.1", page_icon="🚀", layout="wide")
+st.set_page_config(page_title="IDX Power Screener v3.2", page_icon="🚀", layout="wide")
 
 st.markdown("""
 <style>
@@ -20,6 +22,10 @@ st.markdown("""
 .buy {background:#34d399;color:white}
 .neutral {background:#fbbf24;color:white}
 .sell {background:#ef4444;color:white}
+.phase-akum {background:#10b981;color:white;padding:0.5rem;border-radius:0.5rem;font-weight:700}
+.phase-markup {background:#3b82f6;color:white;padding:0.5rem;border-radius:0.5rem;font-weight:700}
+.phase-dist {background:#ef4444;color:white;padding:0.5rem;border-radius:0.5rem;font-weight:700}
+.phase-side {background:#6b7280;color:white;padding:0.5rem;border-radius:0.5rem;font-weight:700}
 </style>
 """, unsafe_allow_html=True)
 
@@ -27,6 +33,8 @@ st.markdown("""
 def init_db():
     conn = sqlite3.connect('screener_tracking.db')
     c = conn.cursor()
+    
+    # Recommendations table
     c.execute('''CREATE TABLE IF NOT EXISTS recommendations
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   date TEXT, ticker TEXT, strategy TEXT, score INTEGER,
@@ -35,11 +43,30 @@ def init_db():
                   profit_pct REAL, exit_price REAL, exit_date TEXT, notes TEXT,
                   position_size TEXT DEFAULT '3/3')''')
     
+    # Watchlist table
     c.execute('''CREATE TABLE IF NOT EXISTS watchlist
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   date_added TEXT, ticker TEXT, strategy TEXT,
                   score INTEGER, confidence INTEGER, target_entry REAL,
                   current_price REAL, notes TEXT, status TEXT DEFAULT 'WATCHING')''')
+    
+    # Backtest results table (NEW!)
+    c.execute('''CREATE TABLE IF NOT EXISTS backtest_results
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  strategy TEXT, period TEXT, date_run TEXT,
+                  total_signals INTEGER, wins INTEGER, losses INTEGER,
+                  win_rate REAL, avg_win REAL, avg_loss REAL,
+                  profit_factor REAL, max_drawdown REAL,
+                  sharpe_ratio REAL, details TEXT)''')
+    
+    # Price alerts table (NEW!)
+    c.execute('''CREATE TABLE IF NOT EXISTS price_alerts
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  ticker TEXT, alert_type TEXT, target_price REAL,
+                  current_price REAL, status TEXT DEFAULT 'ACTIVE',
+                  created_date TEXT, triggered_date TEXT,
+                  message TEXT)''')
+    
     conn.commit()
     conn.close()
 
@@ -54,10 +81,9 @@ def check_idx_market_status():
     jkt_time = get_jakarta_time()
     hour = jkt_time.hour
     minute = jkt_time.minute
-    weekday = jkt_time.weekday()  # 0 = Monday, 6 = Sunday
+    weekday = jkt_time.weekday()
     
-    # IDX: Mon-Fri, 09:00-16:15
-    if weekday >= 5:  # Weekend
+    if weekday >= 5:
         return "🔴 CLOSED - Weekend", False
     
     if hour < 9:
@@ -101,6 +127,7 @@ def fetch_data(ticker, period="6mo"):
         if len(df) < 20:
             return None
         
+        # Technical Indicators
         df['EMA5'] = df['Close'].ewm(5).mean()
         df['EMA9'] = df['Close'].ewm(9).mean()
         df['EMA21'] = df['Close'].ewm(21).mean()
@@ -136,6 +163,14 @@ def fetch_data(ticker, period="6mo"):
         df['MOM_5D'] = (df['Close'] - df['Close'].shift(5)) / df['Close'].shift(5) * 100
         df['MOM_10D'] = (df['Close'] - df['Close'].shift(10)) / df['Close'].shift(10) * 100
         
+        # ATR for volatility
+        high_low = df['High'] - df['Low']
+        high_close = np.abs(df['High'] - df['Close'].shift())
+        low_close = np.abs(df['Low'] - df['Close'].shift())
+        ranges = pd.concat([high_low, high_close, low_close], axis=1)
+        true_range = np.max(ranges, axis=1)
+        df['ATR'] = true_range.rolling(14).mean()
+        
         return df
     except:
         return None
@@ -160,7 +195,6 @@ def check_data_freshness(df):
     last_date = df.index[-1]
     now = datetime.now()
     
-    # Handle timezone-aware datetime
     if last_date.tzinfo is not None:
         last_date = last_date.tz_localize(None)
     
@@ -173,6 +207,108 @@ def check_data_freshness(df):
     else:
         return f"❌ Very old ({age_hours/24:.0f}d old)", "error"
 
+# ============= MULTI-TIMEFRAME ANALYSIS (NEW!) =============
+def analyze_multi_timeframe(ticker):
+    """Analyze ticker across multiple timeframes"""
+    results = {}
+    
+    for tf in ['1mo', '3mo', '6mo']:
+        df = fetch_data(ticker, tf)
+        if df is not None:
+            score, details, conf = score_full_screener_v3(df)
+            
+            # Determine trend
+            if score >= 75:
+                trend = "Strong Bull"
+            elif score >= 65:
+                trend = "Bull"
+            elif score >= 50:
+                trend = "Neutral"
+            elif score > 0:
+                trend = "Weak"
+            else:
+                trend = "Bear"
+            
+            results[tf] = {
+                'score': score,
+                'confidence': conf,
+                'trend': trend,
+                'aligned': score >= 65
+            }
+    
+    # Check alignment
+    if len(results) >= 2:
+        aligned = all(r['aligned'] for r in results.values())
+        avg_score = sum(r['score'] for r in results.values()) / len(results)
+        
+        if aligned and avg_score >= 70:
+            verdict = "🟢 STRONG BUY - All timeframes aligned!"
+        elif aligned:
+            verdict = "🟡 BUY - Timeframes aligned"
+        else:
+            verdict = "🔴 CAUTION - Timeframe conflict"
+    else:
+        verdict = "⚪ Insufficient data"
+    
+    return results, verdict
+
+# ============= SUPPORT & RESISTANCE FINDER (NEW!) =============
+def find_support_resistance(df, ticker_price):
+    """Find key support and resistance levels"""
+    if df is None or len(df) < 50:
+        return None
+    
+    # Get recent highs and lows
+    highs = df['High'].tail(100)
+    lows = df['Low'].tail(100)
+    
+    # Find peaks and troughs
+    from scipy.signal import argrelextrema
+    
+    resistance_indices = argrelextrema(highs.values, np.greater, order=5)[0]
+    support_indices = argrelextrema(lows.values, np.less, order=5)[0]
+    
+    resistances = sorted(highs.iloc[resistance_indices].unique(), reverse=True)[:3]
+    supports = sorted(lows.iloc[support_indices].unique(), reverse=True)[:3]
+    
+    # Add current EMAs as dynamic S/R
+    current_ema50 = df['EMA50'].iloc[-1]
+    current_ema200 = df['EMA200'].iloc[-1]
+    
+    # Classify strength based on touch count
+    sr_data = {
+        'resistances': [],
+        'supports': [],
+        'current_price': ticker_price
+    }
+    
+    for i, r in enumerate(resistances):
+        strength = "STRONG" if i == 0 else "MEDIUM" if i == 1 else "WEAK"
+        sr_data['resistances'].append({
+            'level': round(r, 0),
+            'strength': strength,
+            'distance_pct': ((r - ticker_price) / ticker_price * 100)
+        })
+    
+    for i, s in enumerate(supports):
+        strength = "STRONG" if i == 0 else "MEDIUM" if i == 1 else "WEAK"
+        sr_data['supports'].append({
+            'level': round(s, 0),
+            'strength': strength,
+            'distance_pct': ((ticker_price - s) / ticker_price * 100)
+        })
+    
+    # Add EMAs
+    if current_ema50 < ticker_price:
+        sr_data['supports'].append({
+            'level': round(current_ema50, 0),
+            'strength': 'DYNAMIC',
+            'distance_pct': ((ticker_price - current_ema50) / ticker_price * 100),
+            'type': 'EMA50'
+        })
+    
+    return sr_data
+
 # ============= VALIDATION =============
 def validate_not_downtrend(df):
     """Validate not in downtrend - CRITICAL CHECK"""
@@ -180,20 +316,16 @@ def validate_not_downtrend(df):
         r = df.iloc[-1]
         reasons = []
         
-        # Check 1: Price vs EMAs
         if r['Close'] < r['EMA50'] and r['EMA50'] < r['EMA200']:
             reasons.append("Price < EMA50 < EMA200")
         
-        # Check 2: EMA alignment
         if r['EMA9'] < r['EMA21'] < r['EMA50']:
             reasons.append("EMAs in death cross")
         
-        # Check 3: Momentum
         mom_10d = df['MOM_10D'].iloc[-1]
         if mom_10d < -5:
             reasons.append(f"10D Mom: {mom_10d:.1f}%")
         
-        # Strict rejection: any 2 reasons = reject
         if len(reasons) >= 2:
             return False, " | ".join(reasons)
         elif len(reasons) == 1:
@@ -387,52 +519,150 @@ def score_bsjp_v3(df):
         return 0, {}, 0
 
 def score_bandar_v3(df):
+    """Enhanced Bandar tracking with better logic"""
     try:
+        # Calculate OBV (On-Balance Volume)
         obv = [0]
-        for i in range(1,len(df)):
+        for i in range(1, len(df)):
             if df['Close'].iloc[i] > df['Close'].iloc[i-1]:
-                obv.append(obv[-1]+df['Volume'].iloc[i])
+                obv.append(obv[-1] + df['Volume'].iloc[i])
             elif df['Close'].iloc[i] < df['Close'].iloc[i-1]:
-                obv.append(obv[-1]-df['Volume'].iloc[i])
+                obv.append(obv[-1] - df['Volume'].iloc[i])
             else:
                 obv.append(obv[-1])
         df['OBV'] = obv
         
-        vol_ratio = df['Volume'].tail(5).mean()/df['Volume'].rolling(20).mean().iloc[-1]
-        price_chg = (df['Close'].iloc[-1]-df['Close'].iloc[-20])/df['Close'].iloc[-20]*100
-        obv_trend = (df['OBV'].iloc[-1]-df['OBV'].iloc[-20])/abs(df['OBV'].iloc[-20]) if df['OBV'].iloc[-20] != 0 else 0
+        # Calculate OBV MA for trend
+        df['OBV_MA20'] = pd.Series(df['OBV']).rolling(20).mean()
+        
+        # Recent metrics (last 5 vs 20 days)
+        recent_vol = df['Volume'].tail(5).mean()
+        avg_vol_20 = df['Volume'].tail(20).mean()
+        vol_ratio = recent_vol / avg_vol_20 if avg_vol_20 > 0 else 1
+        
+        # Price change analysis
+        current_price = df['Close'].iloc[-1]
+        price_20_ago = df['Close'].iloc[-20]
+        price_chg_pct = ((current_price - price_20_ago) / price_20_ago * 100)
+        
+        # OBV trend
+        current_obv = df['OBV'].iloc[-1]
+        obv_20_ago = df['OBV'].iloc[-20]
+        obv_trend = ((current_obv - obv_20_ago) / abs(obv_20_ago) * 100) if obv_20_ago != 0 else 0
+        
+        # OBV vs Price divergence
+        obv_ma_current = df['OBV_MA20'].iloc[-1]
+        obv_ma_prev = df['OBV_MA20'].iloc[-10]
+        obv_rising = obv_ma_current > obv_ma_prev
+        
+        price_rising = current_price > df['Close'].iloc[-10]
+        
+        # ATR for volatility context
+        atr_pct = (df['ATR'].iloc[-1] / current_price * 100)
         
         details = {}
-        if vol_ratio > 1.5 and -2 < price_chg < 5 and obv_trend > 0.1:
+        phase = ""
+        score = 0
+        confidence = 0
+        
+        # ===== PHASE DETECTION LOGIC =====
+        
+        # ACCUMULATION: High volume, price sideways/down, OBV rising
+        if (vol_ratio > 1.3 and 
+            -3 < price_chg_pct < 5 and 
+            obv_rising and 
+            obv_trend > 5):
+            
             phase = '🟢 AKUMULASI'
             score = 90
             confidence = 85
-            details['Phase'] = 'AKUMULASI'
-            details['Action'] = '🚀 BUY'
-        elif price_chg > 5 and obv_trend > 0.05:
+            
+            details['Phase'] = 'AKUMULASI (Smart Money Buying)'
+            details['Action'] = '🚀 STRONG BUY'
+            details['Signal'] = 'Volume ↑ + Price Sideways + OBV ↑'
+            details['Strength'] = 'VERY STRONG' if vol_ratio > 1.8 else 'STRONG'
+            
+        # MARKUP: Price breaking out with volume, OBV confirming
+        elif (price_chg_pct > 5 and 
+              vol_ratio > 1.1 and 
+              obv_rising):
+            
             phase = '🚀 MARKUP'
             score = 85
             confidence = 80
-            details['Phase'] = 'MARKUP'
-            details['Action'] = '🎯 HOLD'
-        elif vol_ratio > 1.5 and price_chg < -3:
+            
+            details['Phase'] = 'MARKUP (Uptrend Confirmed)'
+            details['Action'] = '🎯 HOLD / BUY PULLBACK'
+            details['Signal'] = 'Breakout with volume'
+            details['Strength'] = 'STRONG' if price_chg_pct > 10 else 'MODERATE'
+            
+        # DISTRIBUTION: High volume, price not moving up, OBV declining
+        elif (vol_ratio > 1.5 and 
+              price_chg_pct < 3 and 
+              not obv_rising and 
+              current_price > df['Close'].rolling(50).mean().iloc[-1]):
+            
             phase = '🔴 DISTRIBUSI'
+            score = 15
+            confidence = 20
+            
+            details['Phase'] = 'DISTRIBUSI (Smart Money Selling)'
+            details['Action'] = '🛑 SELL / AVOID'
+            details['Signal'] = 'High volume but no price gain'
+            details['Strength'] = 'DANGER!'
+            
+        # MARKDOWN: Price falling with volume, OBV declining
+        elif (price_chg_pct < -5 and 
+              not obv_rising):
+            
+            phase = '⚫ MARKDOWN'
             score = 10
             confidence = 15
-            details['Phase'] = 'DISTRIBUSI'
-            details['Action'] = '🛑 AVOID'
+            
+            details['Phase'] = 'MARKDOWN (Downtrend)'
+            details['Action'] = '🚫 STAY AWAY'
+            details['Signal'] = 'Falling prices'
+            details['Strength'] = 'AVOID'
+            
+        # SIDEWAYS: No clear pattern
         else:
             phase = '⚪ SIDEWAYS'
             score = 50
             confidence = 50
-            details['Phase'] = 'SIDEWAYS'
-            details['Action'] = '⏸️ WAIT'
+            
+            details['Phase'] = 'SIDEWAYS (No Clear Pattern)'
+            details['Action'] = '⏸️ WAIT & WATCH'
+            details['Signal'] = 'Mixed signals'
+            details['Strength'] = 'NEUTRAL'
         
-        details['Volume'] = f'{vol_ratio:.2f}x'
-        details['Price'] = f'{price_chg:+.2f}%'
+        # Additional metrics
+        details['Volume_Ratio'] = f'{vol_ratio:.2f}x'
+        details['Price_Change'] = f'{price_chg_pct:+.2f}%'
+        details['OBV_Trend'] = f'{obv_trend:+.1f}%'
+        details['Volatility'] = f'{atr_pct:.2f}%'
+        
+        # Risk assessment
+        if phase == '🟢 AKUMULASI':
+            details['Risk'] = 'LOW (Best entry point)'
+            details['Hold_Period'] = '2-8 weeks'
+            details['Target'] = '+15% to +40%'
+        elif phase == '🚀 MARKUP':
+            details['Risk'] = 'MEDIUM (Trend following)'
+            details['Hold_Period'] = '1-4 weeks'
+            details['Target'] = '+10% to +25%'
+        elif phase == '🔴 DISTRIBUSI':
+            details['Risk'] = 'VERY HIGH (Exit zone)'
+            details['Hold_Period'] = 'EXIT ASAP'
+            details['Target'] = 'Preserve capital'
+        else:
+            details['Risk'] = 'MEDIUM (Uncertain)'
+            details['Hold_Period'] = 'Wait for clear signal'
+            details['Target'] = 'TBD'
+        
         return score, details, phase, confidence
-    except:
-        return 0, {}, 'UNKNOWN', 0
+        
+    except Exception as e:
+        return 0, {'Error': str(e)}, 'UNKNOWN', 0
 
 def score_value_v3(df):
     try:
@@ -448,7 +678,7 @@ def score_value_v3(df):
         
         high52 = df['High'].tail(252).max() if len(df)>252 else df['High'].max()
         low52 = df['Low'].tail(252).min() if len(df)>252 else df['Low'].min()
-        pos52 = (r['Close']-low52)/(high52-low52)*100
+        pos52 = (r['Close']-low pos52 = (r['Close']-low52)/(high52-low52)*100
         
         if pos52 < 20:
             score += 30
@@ -483,9 +713,9 @@ def score_value_v3(df):
 def calculate_three_lot_strategy(entry_price):
     """Calculate 3-lot position management"""
     return {
-        'lot1_tp': round(entry_price * 1.08, 0),   # 8% - First third
-        'lot2_tp': round(entry_price * 1.15, 0),   # 15% - Second third
-        'lot3_trail': 'Trail with 20D EMA',         # Trailing stop for runners
+        'lot1_tp': round(entry_price * 1.08, 0),
+        'lot2_tp': round(entry_price * 1.15, 0),
+        'lot3_trail': 'Trail with 20D EMA',
         'initial_sl': round(entry_price * 0.94, 0)
     }
 
@@ -650,13 +880,14 @@ def bulk_update_active_positions():
         
         if df is not None:
             c = conn.cursor()
-            c.execute("UPDATE recommendations SET current_price=? WHERE id=?", (df['Close'].iloc[-1], row['id']))
+            c.execute("UPDATE recommendations SET current_price=? WHERE id=?", 
+                     (df['Close'].iloc[-1], row['id']))
             conn.commit()
             updated += 1
         else:
             failed += 1
         
-        time.sleep(0.5)  # Rate limiting
+        time.sleep(0.5)
     
     conn.close()
     progress.empty()
@@ -717,7 +948,6 @@ def display_score_breakdown(details, score, confidence):
     """Show how score was calculated"""
     st.markdown("### 📊 Score Breakdown")
     
-    # Extract points from details
     components = []
     for key, value in details.items():
         if '(+' in str(value):
@@ -731,7 +961,6 @@ def display_score_breakdown(details, score, confidence):
         st.info("No detailed scoring breakdown available")
         return
     
-    # Display
     total_points = sum(c[2] for c in components)
     
     for component, description, points in sorted(components, key=lambda x: x[2], reverse=True):
@@ -826,13 +1055,14 @@ def load_tickers():
         return [t if t.endswith(".JK") else f"{t}.JK" for t in tickers]
     except:
         return ["BBCA.JK","BBRI.JK","BMRI.JK","TLKM.JK","ASII.JK",
-                "BREN.JK","BRPT.JK","RATU.JK","RAJA.JK"]
+                "BREN.JK","BRPT.JK","RATU.JK","RAJA.JK","GOTO.JK",
+                "ADRO.JK","ANTM.JK","BBNI.JK","INDF.JK","UNVR.JK"]
 
 # ============= MAIN =============
 init_db()
 
-st.markdown('<div class="big-title">🚀 IDX Power Screener v3.1</div>', unsafe_allow_html=True)
-st.markdown('<div class="subtitle">Enhanced with Timezone | Position Management | Watchlist</div>', unsafe_allow_html=True)
+st.markdown('<div class="big-title">🚀 IDX Power Screener v3.2</div>', unsafe_allow_html=True)
+st.markdown('<div class="subtitle">Ultimate Edition: Multi-TF | Bandar Logic | S/R Finder | Advanced Tools</div>', unsafe_allow_html=True)
 
 tickers = load_tickers()
 
@@ -853,10 +1083,10 @@ with st.sidebar:
     
     menu = st.radio("📋 Menu", [
         "1️⃣ Full Screener", 
-        "2️⃣ Single Stock", 
+        "2️⃣ Single Stock + Multi-TF", 
         "3️⃣ BPJS", 
         "4️⃣ BSJP", 
-        "5️⃣ Bandar Tracking", 
+        "5️⃣ Bandar Tracking 🔥", 
         "6️⃣ Value Hunting",
         "7️⃣ Track Performance", 
         "8️⃣ Active Positions",
@@ -881,85 +1111,223 @@ with st.sidebar:
         risk_pct = st.slider("Risk per Trade (%)", 1.0, 5.0, 2.0, 0.5)
         
         st.caption(f"💵 Risk per trade: Rp {account * risk_pct / 100:,.0f}")
-        st.caption("📊 Recommended: 2% per trade")
+        st.caption("📊 Recommended: 2% per trade max")
     
     st.markdown("---")
-    st.caption("💡 IDX Traders v3.1 - Enhanced Edition")
+    st.caption("💡 IDX Traders v3.2 - Ultimate Edition")
+    st.caption("🔥 NEW: Enhanced Bandar Logic!")
 
 # ============= MENU HANDLERS =============
 
 if "Test" in menu:
     st.markdown("### 🧪 Test Cases")
-    st.info("Testing validation logic on known stocks")
+    st.info("Testing validation logic and bandar detection on known stocks")
     
-    if st.button("🔬 Run Test", type="primary"):
-        test_stocks = ["BREN.JK", "BRPT.JK", "RATU.JK", "RAJA.JK", "BBCA.JK"]
+    if st.button("🔬 Run Comprehensive Test", type="primary"):
+        test_stocks = ["BREN.JK", "BRPT.JK", "RATU.JK", "BBCA.JK", "GOTO.JK"]
         
         for ticker in test_stocks:
-            df = fetch_data(ticker, period)
+            df = fetch_data(ticker, "6mo")
             if df is not None:
+                # Full screener score
                 score, details, conf = score_full_screener_v3(df)
                 
-                with st.expander(f"{ticker} - Score: {score} | Conf: {conf}%"):
+                # Bandar analysis
+                band_score, band_details, band_phase, band_conf = score_bandar_v3(df)
+                
+                with st.expander(f"{ticker} - Score: {score} | Bandar: {band_phase}"):
                     col1, col2, col3 = st.columns(3)
                     col1.metric("Score", f"{score}/100")
                     col2.metric("Confidence", f"{conf}%")
                     col3.metric("Price", f"Rp {df['Close'].iloc[-1]:,.0f}")
                     
+                    st.markdown("### 📊 Full Screener Analysis")
                     if score >= 65:
-                        st.success("✅ SHOULD APPEAR IN RESULTS")
+                        st.success("✅ PASS - Should appear in results")
                     elif score > 0:
-                        st.warning("⚠️ LOW SCORE - May not meet criteria")
+                        st.warning("⚠️ LOW SCORE")
                     else:
-                        st.error("❌ REJECTED BY VALIDATION")
+                        st.error("❌ REJECTED")
                     
-                    st.markdown("**Details:**")
                     for k, v in details.items():
-                        if '⛔' in k or '❌' in k:
+                        if '⛔' in k:
                             st.error(f"**{k}:** {v}")
                         elif '⚠️' in k:
                             st.warning(f"**{k}:** {v}")
                         else:
                             st.info(f"**{k}:** {v}")
+                    
+                    st.markdown("---")
+                    st.markdown("### 🎯 Bandar Analysis")
+                    
+                    # Phase box with color
+                    if '🟢' in band_phase:
+                        phase_class = "phase-akum"
+                    elif '🚀' in band_phase:
+                        phase_class = "phase-markup"
+                    elif '🔴' in band_phase:
+                        phase_class = "phase-dist"
+                    else:
+                        phase_class = "phase-side"
+                    
+                    st.markdown(f'<div class="{phase_class}">{band_phase}</div>', unsafe_allow_html=True)
+                    
+                    for k, v in band_details.items():
+                        st.info(f"**{k}:** {v}")
             else:
                 st.error(f"❌ {ticker} - Failed to fetch data")
 
 elif "Single" in menu:
-    st.markdown("### 📈 Single Stock Analysis")
+    st.markdown("### 📈 Single Stock Analysis + Multi-Timeframe")
     
-    selected = st.selectbox("Pilih Saham", tickers)
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        selected = st.selectbox("Pilih Saham", tickers)
+    with col2:
+        analyze_mtf = st.checkbox("Multi-TF", value=True)
     
-    if st.button("🔍 Analyze", type="primary"):
-        with st.spinner(f"Analyzing {selected}..."):
+    if st.button("🔍 Analyze Deep", type="primary"):
+        with st.spinner(f"Deep analysis on {selected}..."):
             df = fetch_data(selected, period)
             
             if df is None:
                 st.error("❌ Failed to fetch data")
             else:
-                # Data freshness check
                 freshness, status_type = check_data_freshness(df)
                 getattr(st, status_type)(f"📅 Data: {freshness}")
                 
-                score, details, conf = score_full_screener_v3(df)
                 price = df['Close'].iloc[-1]
-                levels = get_signal_levels(score, price, conf)
+                
+                # Main analysis
+                score, details, conf = score_full_screener_v3(df)
+                band_score, band_details, band_phase, band_conf = score_bandar_v3(df)
                 
                 # Main metrics
-                col1, col2, col3 = st.columns(3)
+                col1, col2, col3, col4 = st.columns(4)
                 col1.metric("💰 Price", f"Rp {price:,.0f}")
                 col2.metric("📊 Score", f"{score}/100")
                 col3.metric("🎯 Confidence", f"{conf}%")
+                col4.metric("🎯 Bandar Phase", band_phase.split()[1] if len(band_phase.split()) > 1 else band_phase)
                 
-                # Trend display
-                st.markdown(f"### {levels['trend']}")
+                # Multi-timeframe analysis
+                if analyze_mtf:
+                    st.markdown("---")
+                    st.markdown("### 🔄 Multi-Timeframe Analysis")
+                    
+                    with st.spinner("Analyzing multiple timeframes..."):
+                        mtf_results, mtf_verdict = analyze_multi_timeframe(selected)
+                    
+                    # Verdict
+                    if "STRONG BUY" in mtf_verdict:
+                        st.success(mtf_verdict)
+                    elif "BUY" in mtf_verdict:
+                        st.info(mtf_verdict)
+                    else:
+                        st.warning(mtf_verdict)
+                    
+                    # Display each timeframe
+                    col1, col2, col3 = st.columns(3)
+                    
+                    for i, (tf, data) in enumerate(mtf_results.items()):
+                        col = [col1, col2, col3][i]
+                        with col:
+                            st.markdown(f"**{tf.upper()} Timeframe**")
+                            st.metric("Score", f"{data['score']}/100")
+                            st.metric("Trend", data['trend'])
+                            st.caption(f"Conf: {data['confidence']}%")
+                            
+                            if data['aligned']:
+                                st.success("✅ Bullish")
+                            else:
+                                st.error("❌ Bearish")
                 
-                # Signal box
-                signal_class = levels['signal_class']
-                st.markdown(f'<div class="signal-box {signal_class}">{levels["signal"]}</div>', 
-                           unsafe_allow_html=True)
+                # Support & Resistance
+                st.markdown("---")
+                st.markdown("### 📊 Support & Resistance Levels")
                 
-                # Technical details
-                st.markdown("### 📋 Technical Analysis")
+                sr_data = find_support_resistance(df, price)
+                
+                if sr_data:
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.markdown("**🔴 RESISTANCE LEVELS**")
+                        for r in sr_data['resistances']:
+                            strength_color = "🔴" if r['strength'] == "STRONG" else "🟠" if r['strength'] == "MEDIUM" else "🟡"
+                            st.info(f"{strength_color} **R{sr_data['resistances'].index(r)+1}:** Rp {r['level']:,.0f} ({r['strength']}) - {r['distance_pct']:+.1f}%")
+                    
+                    with col2:
+                        st.markdown("**🟢 SUPPORT LEVELS**")
+                        for s in sr_data['supports']:
+                            if 'type' in s:
+                                strength_color = "🔵"
+                                st.success(f"{strength_color} **{s['type']}:** Rp {s['level']:,.0f} (DYNAMIC) - {s['distance_pct']:+.1f}%")
+                            else:
+                                strength_color = "🟢" if s['strength'] == "STRONG" else "🟡" if s['strength'] == "MEDIUM" else "⚪"
+                                st.success(f"{strength_color} **S{sr_data['supports'].index(s)+1}:** Rp {s['level']:,.0f} ({s['strength']}) - {s['distance_pct']:+.1f}%")
+                    
+                    # Trading plan based on S/R
+                    st.markdown("---")
+                    st.markdown("### 🎯 S/R Based Trading Plan")
+                    
+                    nearest_support = sr_data['supports'][0] if sr_data['supports'] else None
+                    nearest_resistance = sr_data['resistances'][0] if sr_data['resistances'] else None
+                    
+                    if nearest_support and nearest_resistance:
+                        entry_zone = nearest_support['level']
+                        target_zone = nearest_resistance['level']
+                        sl_zone = entry_zone * 0.96
+                        
+                        risk_reward = (target_zone - entry_zone) / (entry_zone - sl_zone) if (entry_zone - sl_zone) > 0 else 0
+                        
+                        st.info(f"""
+                        **Optimal Entry:** Near support at Rp {entry_zone:,.0f}
+                        **Target:** Resistance at Rp {target_zone:,.0f} ({((target_zone-entry_zone)/entry_zone*100):+.1f}%)
+                        **Stop Loss:** Below support at Rp {sl_zone:,.0f}
+                        **Risk:Reward:** 1:{risk_reward:.2f} {'✅' if risk_reward >= 2 else '⚠️'}
+                        """)
+                
+                # Bandar Analysis
+                st.markdown("---")
+                st.markdown("### 🎯 Bandar / Smart Money Analysis")
+                
+                if '🟢' in band_phase:
+                    st.markdown(f'<div class="phase-akum">{band_phase}</div>', unsafe_allow_html=True)
+                elif '🚀' in band_phase:
+                    st.markdown(f'<div class="phase-markup">{band_phase}</div>', unsafe_allow_html=True)
+                elif '🔴' in band_phase:
+                    st.markdown(f'<div class="phase-dist">{band_phase}</div>', unsafe_allow_html=True)
+                else:
+                    st.markdown(f'<div class="phase-side">{band_phase}</div>', unsafe_allow_html=True)
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    for k, v in list(band_details.items())[:len(band_details)//2]:
+                        if 'Action' in k:
+                            st.success(f"**{k}:** {v}")
+                        elif 'Risk' in k:
+                            if 'LOW' in str(v):
+                                st.success(f"**{k}:** {v}")
+                            elif 'HIGH' in str(v):
+                                st.error(f"**{k}:** {v}")
+                            else:
+                                st.warning(f"**{k}:** {v}")
+                        else:
+                            st.info(f"**{k}:** {v}")
+                
+                with col2:
+                    for k, v in list(band_details.items() for k, v in list(band_details.items())[len(band_details)//2:]:
+                        if 'Target' in k:
+                            st.success(f"**{k}:** {v}")
+                        elif 'DANGER' in str(v) or 'AVOID' in str(v):
+                            st.error(f"**{k}:** {v}")
+                        else:
+                            st.info(f"**{k}:** {v}")
+                
+                # Technical Details
+                st.markdown("---")
+                st.markdown("### 📋 Technical Analysis Details")
+                
                 for k, v in details.items():
                     if '⛔' in k or '❌' in k:
                         st.error(f"**{k}:** {v}")
@@ -969,7 +1337,10 @@ elif "Single" in menu:
                         st.info(f"**{k}:** {v}")
                 
                 # Entry strategy
+                levels = get_signal_levels(score, price, conf)
+                
                 if levels["ideal"]["entry"]:
+                    st.markdown("---")
                     st.markdown("### 🎯 Entry Strategy")
                     
                     col1, col2 = st.columns(2)
@@ -1006,11 +1377,11 @@ elif "Single" in menu:
                     st.success(f"""
                     **Position Sizing: Split into 3 equal lots**
                     
-                    🎯 **Lot 1:** Sell at {three_lot['lot1_tp']:,.0f} (+8%)
-                    🎯 **Lot 2:** Sell at {three_lot['lot2_tp']:,.0f} (+15%)
-                    🏃 **Lot 3:** {three_lot['lot3_trail']} (Let it run!)
+                    🎯 **Lot 1/3:** Sell at Rp {three_lot['lot1_tp']:,.0f} (+8%)
+                    🎯 **Lot 2/3:** Sell at Rp {three_lot['lot2_tp']:,.0f} (+15%)
+                    🏃 **Lot 3/3:** {three_lot['lot3_trail']} (Let it run!)
                     
-                    🛑 **Initial SL:** {three_lot['initial_sl']:,.0f} for ALL lots
+                    🛑 **Initial SL:** Rp {three_lot['initial_sl']:,.0f} for ALL lots
                     """)
                     
                     # Position size calculator
@@ -1033,12 +1404,12 @@ elif "Single" in menu:
                 # Action buttons
                 st.markdown("---")
                 col1, col2 = st.columns(2)
-                if col1.button("💾 Track This Position"):
-                    save_recommendation(selected.replace('.JK',''), "Single Stock", 
+                if col1.button("💾 Track This Position", use_container_width=True):
+                    save_recommendation(selected.replace('.JK',''), "Single Stock + Multi-TF", 
                                       score, conf, price, levels['signal'])
-                    st.success("✅ Added to tracking!")
+                    st.success("✅ Added to Active Positions!")
                     
-                if col2.button("🔖 Add to Watchlist"):
+                if col2.button("🔖 Add to Watchlist", use_container_width=True):
                     add_to_watchlist(selected.replace('.JK',''), "Single Stock",
                                     score, conf, levels['ideal']['entry'] if levels['ideal']['entry'] else price)
                     st.success("✅ Added to watchlist!")
@@ -1051,7 +1422,6 @@ elif "Watchlist" in menu:
     if watchlist.empty:
         st.info("📭 Your watchlist is empty. Add stocks from screener results!")
     else:
-        # Update prices button
         if st.button("🔄 Update All Prices"):
             progress = st.progress(0)
             status = st.empty()
@@ -1081,7 +1451,6 @@ elif "Watchlist" in menu:
         st.markdown(f"**Total: {len(watchlist)} stocks**")
         
         for _, row in watchlist.iterrows():
-            # Calculate if target entry hit
             if row['current_price'] <= row['target_entry']:
                 alert = "🎯 TARGET HIT!"
                 box_color = "success"
@@ -1115,7 +1484,7 @@ elif "Watchlist" in menu:
                     st.success("✅ Moved to active positions!")
                     st.rerun()
                 
-                if col2.button("🔄 Refresh Price", key=f"rp{row['id']}"):
+                if col2.button("🔄 Refresh", key=f"rp{row['id']}"):
                     ticker = row['ticker'] if row['ticker'].endswith('.JK') else f"{row['ticker']}.JK"
                     df = fetch_data_with_retry(ticker, "5d")
                     if df is not None:
@@ -1125,7 +1494,7 @@ elif "Watchlist" in menu:
                                  (df['Close'].iloc[-1], row['id']))
                         conn.commit()
                         conn.close()
-                        st.success("✅ Price updated!")
+                        st.success("✅ Updated!")
                         st.rerun()
                 
                 if col3.button("❌ Remove", key=f"rm{row['id']}"):
@@ -1134,10 +1503,10 @@ elif "Watchlist" in menu:
                     c.execute("DELETE FROM watchlist WHERE id=?", (row['id'],))
                     conn.commit()
                     conn.close()
-                    st.success("✅ Removed from watchlist!")
+                    st.success("✅ Removed!")
                     st.rerun()
 
-elif "Track" in menu:
+elif "Track" in menu and "Performance" in menu:
     st.markdown("### 📊 Performance Tracking")
     
     stats = get_performance_stats()
@@ -1152,7 +1521,6 @@ elif "Track" in menu:
         4. Track your progress here!
         """)
     else:
-        # Overall stats
         col1, col2, col3, col4 = st.columns(4)
         win_rate = (stats['wins'] / stats['total'] * 100) if stats['total'] > 0 else 0
         
@@ -1162,16 +1530,13 @@ elif "Track" in menu:
         col3.metric("Avg Win", f"+{stats['avg_profit']:.2f}%")
         col4.metric("Avg Loss", f"{stats['avg_loss']:.2f}%")
         
-        # Health indicator
         health_msg, health_type = get_strategy_health(stats)
         getattr(st, health_type)(health_msg)
         
-        # Strategy comparison
         if not stats['by_strategy'].empty:
             st.markdown("---")
             plot_strategy_comparison(stats)
         
-        # Confidence level analysis
         if not stats['by_confidence'].empty:
             st.markdown("---")
             st.markdown("### 🎯 Performance by Confidence Level")
@@ -1184,13 +1549,12 @@ elif "Track" in menu:
                 col2.metric("Win Rate", f"{wr:.1f}%")
                 col3.metric("Avg Profit", f"{row['avg_profit']:+.2f}%")
         
-        # Recommendations
         st.markdown("---")
         st.markdown("### 💡 Performance Insights")
         
         if win_rate < 40:
             st.error("""
-            **CRITICAL - Immediate Action Needed:**
+            **🔴 CRITICAL - Immediate Action Needed:**
             - Stop trading and review ALL past trades
             - Identify common mistakes
             - Focus ONLY on 80+ confidence signals
@@ -1198,7 +1562,7 @@ elif "Track" in menu:
             """)
         elif win_rate < 50:
             st.warning("""
-            **CAUTION - Strategy Adjustment Required:**
+            **🟡 CAUTION - Strategy Adjustment Required:**
             - Review losing trades - find patterns
             - Increase minimum confidence to 70%
             - Stick to your best-performing strategy only
@@ -1206,7 +1570,7 @@ elif "Track" in menu:
             """)
         elif win_rate < 60:
             st.info("""
-            **ON TRACK - Keep Improving:**
+            **🟢 ON TRACK - Keep Improving:**
             - You're approaching the target zone
             - Keep detailed trade journals
             - Focus on risk management
@@ -1214,14 +1578,14 @@ elif "Track" in menu:
             """)
         else:
             st.success("""
-            **EXCELLENT - Strong Edge:**
+            **🟢 EXCELLENT - Strong Edge:**
             - Your strategy is working!
             - Maintain discipline and consistency
             - Consider scaling up carefully
             - Keep tracking to maintain edge
             """)
 
-elif "Active" in menu:
+elif "Active" in menu and "Positions" in menu:
     st.markdown("### 📋 Active Positions")
     
     active = get_active_recommendations()
@@ -1229,7 +1593,6 @@ elif "Active" in menu:
     if active.empty:
         st.info("📭 No active positions. Start by saving recommendations from screener results!")
     else:
-        # Summary metrics
         summary = get_position_summary(active)
         
         col1, col2, col3, col4 = st.columns(4)
@@ -1242,7 +1605,6 @@ elif "Active" in menu:
         col4.metric("Avg P&L", f"{avg_pnl:+.2f}%",
                    delta_color="normal" if avg_pnl > 0 else "inverse")
         
-        # Update all button
         if st.button("🔄 Update All Prices"):
             with st.spinner("Updating prices..."):
                 updated, failed = bulk_update_active_positions()
@@ -1253,12 +1615,10 @@ elif "Active" in menu:
         
         st.markdown("---")
         
-        # Individual positions
         for _, row in active.iterrows():
             pnl = ((row['current_price'] - row['entry_price']) / row['entry_price'] * 100)
             color = "🟢" if pnl > 0 else "🔴" if pnl < 0 else "⚪"
             
-            # Calculate target hits
             tp1_pct = 8
             tp2_pct = 15
             sl_pct = -6
@@ -1276,19 +1636,16 @@ elif "Active" in menu:
                 status_msg = " 🛑 STOP LOSS!"
             
             with st.expander(f"{color} {row['ticker']} | {row['signal']} | P/L: {pnl:+.2f}%{status_msg}"):
-                # Price info
                 col1, col2, col3 = st.columns(3)
                 col1.metric("Entry", f"Rp {row['entry_price']:,.0f}")
                 col2.metric("Current", f"Rp {row['current_price']:,.0f}")
                 col3.metric("P/L", f"{pnl:+.2f}%")
                 
-                # Additional info
                 col1, col2, col3 = st.columns(3)
                 col1.info(f"**Strategy:** {row['strategy']}")
                 col2.info(f"**Score:** {row['score']}/100")
                 col3.info(f"**Confidence:** {row['confidence']}%")
                 
-                # Position management suggestion
                 st.markdown("### 🎯 Position Management")
                 
                 if tp2_hit:
@@ -1320,7 +1677,6 @@ elif "Active" in menu:
                     - Stop loss at {sl_pct}%
                     """)
                 
-                # Close position buttons
                 st.markdown("### 📝 Close Position")
                 
                 close_notes = {
@@ -1347,37 +1703,33 @@ elif "Active" in menu:
                 
                 col1, col2, col3 = st.columns(3)
                 
-                if col1.button("✅ WIN", key=f"w{row['id']}"):
-                    note = st.selectbox(f"Why did it work? ##{row['id']}", 
-                                       close_notes['WIN'], 
-                                       key=f"wn{row['id']}")
-                    update_recommendation_status(row['id'], 'CLOSED', 'WIN', pnl, 
-                                                row['current_price'], notes=note)
-                    st.success("✅ Position closed as WIN!")
-                    time.sleep(1)
-                    st.rerun()
+                with col1:
+                    if st.button("✅ WIN", key=f"w{row['id']}", use_container_width=True):
+                        note = st.selectbox(f"Why won?", close_notes['WIN'], key=f"wn{row['id']}")
+                        update_recommendation_status(row['id'], 'CLOSED', 'WIN', pnl, 
+                                                    row['current_price'], notes=note)
+                        st.success("✅ Closed as WIN!")
+                        time.sleep(1)
+                        st.rerun()
                 
-                if col2.button("❌ LOSS", key=f"l{row['id']}"):
-                    note = st.selectbox(f"What went wrong? ##{row['id']}", 
-                                       close_notes['LOSS'],
-                                       key=f"ln{row['id']}")
-                    update_recommendation_status(row['id'], 'CLOSED', 'LOSS', pnl, 
-                                                row['current_price'], notes=note)
-                    st.error("❌ Position closed as LOSS")
-                    time.sleep(1)
-                    st.rerun()
+                with col2:
+                    if st.button("❌ LOSS", key=f"l{row['id']}", use_container_width=True):
+                        note = st.selectbox(f"What went wrong?", close_notes['LOSS'], key=f"ln{row['id']}")
+                        update_recommendation_status(row['id'], 'CLOSED', 'LOSS', pnl, 
+                                                    row['current_price'], notes=note)
+                        st.error("❌ Closed as LOSS")
+                        time.sleep(1)
+                        st.rerun()
                 
-                if col3.button("⚪ BE", key=f"b{row['id']}"):
-                    note = st.selectbox(f"Breakeven reason? ##{row['id']}", 
-                                       close_notes['BE'],
-                                       key=f"bn{row['id']}")
-                    update_recommendation_status(row['id'], 'CLOSED', 'BE', pnl, 
-                                                row['current_price'], notes=note)
-                    st.info("⚪ Position closed at breakeven")
-                    time.sleep(1)
-                    st.rerun()
+                with col3:
+                    if st.button("⚪ BE", key=f"b{row['id']}", use_container_width=True):
+                        note = st.selectbox(f"BE reason?", close_notes['BE'], key=f"bn{row['id']}")
+                        update_recommendation_status(row['id'], 'CLOSED', 'BE', pnl, 
+                                                    row['current_price'], notes=note)
+                        st.info("⚪ Closed at breakeven")
+                        time.sleep(1)
+                        st.rerun()
                 
-                # Quick update price
                 st.markdown("---")
                 if st.button("🔄 Update Price Only", key=f"up{row['id']}"):
                     ticker = row['ticker'] if row['ticker'].endswith('.JK') else f"{row['ticker']}.JK"
@@ -1392,13 +1744,545 @@ elif "Active" in menu:
                         st.success("✅ Price updated!")
                         st.rerun()
                     else:
-                        st.error("❌ Failed to update price")
+                        st.error("❌ Failed to update")
 
-elif "BPJS" in menu or "BSJP" in menu or "Bandar" in menu or "Value" in menu:
+elif "Bandar" in menu and "🔥" in menu:
+    st.markdown("### 🎯 Bandar Tracking - Smart Money Scanner 🔥")
+    st.caption("Wyckoff Accumulation/Distribution Detector - Find where institutions are buying!")
+    
+    jkt_time = get_jakarta_time()
+    st.info(f"🕐 Analysis Time: {jkt_time.strftime('%H:%M WIB')}")
+    
+    with st.expander("📚 How Bandar Tracking Works - READ THIS!"):
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("""
+            ### 🟢 AKUMULASI (BUY ZONE) ⭐⭐⭐⭐⭐
+            **Best time to enter!**
+            
+            **Characteristics:**
+            - High volume but price sideways/slight down
+            - OBV (On-Balance Volume) trending UP
+            - Smart money quietly accumulating
+            - Price compressed in tight range
+            
+            **What's Happening:**
+            - Institutions buying from weak hands
+            - Retail sellers, smart money buyers
+            - Building position before markup
+            
+            **Action:** 
+            - START BUYING in tranches
+            - Best risk:reward ratio
+            - Hold 2-8 weeks
+            - Target: +15% to +40%
+            
+            ---
+            
+            ### 🚀 MARKUP (HOLD/FOLLOW ZONE) ⭐⭐⭐⭐
+            **Trend is your friend**
+            
+            **Characteristics:**
+            - Price breaking out with volume
+            - Clear uptrend established
+            - OBV confirming move
+            
+            **What's Happening:**
+            - Institutions driving price up
+            - Retail FOMO buying helps
+            - Momentum phase
+            
+            **Action:**
+            - HOLD if already in
+            - Can add on pullbacks
+            - Trail stop loss
+            - Target: +10% to +25%
+            """)
+        
+        with col2:
+            st.markdown("""
+            ### 🔴 DISTRIBUSI (SELL ZONE) ❌❌❌
+            **DANGER! Exit immediately!**
+            
+            **Characteristics:**
+            - High volume but price NOT moving up
+            - OBV trending DOWN
+            - Price at resistance
+            
+            **What's Happening:**
+            - Institutions SELLING to retail
+            - Retail buyers, smart money sellers
+            - Top formation
+            
+            **Action:**
+            - EXIT ALL POSITIONS
+            - DO NOT BUY
+            - Markdown coming (-15% to -40%)
+            
+            ---
+            
+            ### ⚪ SIDEWAYS (WAIT ZONE) ⭐⭐
+            **No clear edge**
+            
+            **Characteristics:**
+            - Mixed signals
+            - Low volume
+            - No clear OBV trend
+            
+            **What's Happening:**
+            - Market indecision
+            - Could go either way
+            
+            **Action:**
+            - WAIT for clear signal
+            - Watch for volume increase
+            - Patience is key
+            
+            ---
+            
+            ### 💡 KEY PRINCIPLE:
+            **Follow the Smart Money!**
+            - They accumulate BEFORE price rises
+            - They distribute BEFORE price falls
+            - Volume + OBV = footprints
+            - Be early, not late!
+            """)
+    
+    if st.button("🎯 Scan for Smart Money Activity", type="primary"):
+        with st.spinner(f"Analyzing {limit} stocks for institutional activity..."):
+            results = []
+            
+            progress = st.progress(0)
+            status = st.empty()
+            
+            scan_tickers = tickers[:limit] if limit < len(tickers) else tickers
+            
+            for i, ticker in enumerate(scan_tickers):
+                progress.progress((i+1)/len(scan_tickers))
+                status.text(f"🔍 Scanning {ticker}... ({i+1}/{len(scan_tickers)})")
+                
+                df = fetch_data(ticker, period)
+                if df is None or len(df) < 50:
+                    continue
+                
+                price = float(df['Close'].iloc[-1])
+                score, details, phase, confidence = score_bandar_v3(df)
+                
+                if score >= 30:  # Show all meaningful signals
+                    results.append({
+                        "Ticker": ticker,
+                        "Price": price,
+                        "Phase": phase,
+                        "Score": score,
+                        "Confidence": confidence,
+                        "Action": details.get('Action', ''),
+                        "Signal": details.get('Signal', ''),
+                        "Risk": details.get('Risk', ''),
+                        "Volume_Ratio": details.get('Volume_Ratio', ''),
+                        "Price_Change": details.get('Price_Change', ''),
+                        "OBV_Trend": details.get('OBV_Trend', ''),
+                        "Details": details
+                    })
+                
+                time.sleep(0.3)
+            
+            progress.empty()
+            status.empty()
+            
+            if not results:
+                st.warning("⚠️ No significant smart money activity detected")
+                st.info("""
+                **Possible reasons:**
+                - Market in low-activity period
+                - No clear accumulation/distribution patterns
+                - Try scanning more stocks
+                - Check different time period
+                """)
+            else:
+                df_results = pd.DataFrame(results).sort_values("Score", ascending=False)
+                
+                # Summary by phase
+                st.success(f"✅ Found {len(df_results)} stocks with bandar activity!")
+                
+                col1, col2, col3, col4 = st.columns(4)
+                akum_count = len(df_results[df_results['Phase'] == '🟢 AKUMULASI'])
+                markup_count = len(df_results[df_results['Phase'] == '🚀 MARKUP'])
+                dist_count = len(df_results[df_results['Phase'] == '🔴 DISTRIBUSI'])
+                side_count = len(df_results[df_results['Phase'] == '⚪ SIDEWAYS'])
+                
+                col1.metric("🟢 Akumulasi", akum_count, delta="BUY ZONE!" if akum_count > 0 else None)
+                col2.metric("🚀 Markup", markup_count, delta="HOLD ZONE" if markup_count > 0 else None)
+                col3.metric("🔴 Distribusi", dist_count, delta="DANGER!" if dist_count > 0 else None)
+                col4.metric("⚪ Sideways", side_count)
+                
+                # Filter by phase
+                st.markdown("### 🎯 Filter by Phase")
+                col1, col2, col3, col4 = st.columns(4)
+                show_akum = col1.checkbox("🟢 Akumulasi", value=True)
+                show_markup = col2.checkbox("🚀 Markup", value=True)
+                show_dist = col3.checkbox("🔴 Distribusi", value=False)
+                show_side = col4.checkbox("⚪ Sideways", value=False)
+                
+                # Apply filters
+                filtered = df_results.copy()
+                phase_filters = []
+                if show_akum:
+                    phase_filters.append('🟢 AKUMULASI')
+                if show_markup:
+                    phase_filters.append('🚀 MARKUP')
+                if show_dist:
+                    phase_filters.append('🔴 DISTRIBUSI')
+                if show_side:
+                    phase_filters.append('⚪ SIDEWAYS')
+                
+                if phase_filters:
+                    filtered = filtered[filtered['Phase'].isin(phase_filters)]
+                
+                if filtered.empty:
+                    st.info("No stocks match selected filters")
+                else:
+                    # Data table
+                    show_cols = ["Ticker", "Price", "Phase", "Action", "Score", "Confidence", 
+                                "Volume_Ratio", "Price_Change", "OBV_Trend"]
+                    st.dataframe(filtered[show_cols], use_container_width=True, height=400)
+                    
+                    # Detailed cards
+                    st.markdown("### 📊 Detailed Bandar Analysis")
+                    
+                    for _, row in filtered.head(20).iterrows():
+                        # Phase color
+                        if '🟢' in row['Phase']:
+                            phase_html = f'<div class="phase-akum">{row['Phase']} - {row['Action']}</div>'
+                        elif '🚀' in row['Phase']:
+                            phase_html = f'<div class="phase-markup">{row['Phase']} - {row['Action']}</div>'
+                        elif '🔴' in row['Phase']:
+                            phase_html = f'<div class="phase-dist">{row['Phase']} - {row['Action']}</div>'
+                        else:
+                            phase_html = f'<div class="phase-side">{row['Phase']} - {row['Action']}</div>'
+                        
+                        with st.expander(f"{row['Ticker']} - {row['Phase']} (Score: {row['Score']})"):
+                            st.markdown(phase_html, unsafe_allow_html=True)
+                            
+                            col1, col2, col3 = st.columns(3)
+                            col1.metric("💰 Price", f"Rp {row['Price']:,.0f}")
+                            col2.metric("📊 Score", f"{row['Score']}/100")
+                            col3.metric("🎯 Confidence", f"{row['Confidence']}%")
+                            
+                            # Bandar metrics
+                            st.markdown("### 📊 Smart Money Indicators")
+                            col1, col2, col3, col4 = st.columns(4)
+                            col1.info(f"**Volume:** {row['Volume_Ratio']}")
+                            col2.info(f"**Price Δ:** {row['Price_Change']}")
+                            col3.info(f"**OBV Trend:** {row['OBV_Trend']}")
+                            col4.info(f"**Signal:** {row['Signal']}")
+                            
+                            # Trading plan
+                            st.markdown("### 🎯 Trading Plan")
+                            
+                            if '🟢' in row['Phase']:  # Akumulasi
+                                st.success(f"""
+                                **🟢 ACCUMULATION PHASE - PRIME BUY ZONE!**
+                                
+                                ✅ **Why This is Perfect:**
+                                - {row['Signal']}
+                                - {row['Risk']}
+                                - Best risk:reward entry point
+                                
+                                🎯 **Entry Strategy:**
+                                - Start
+                                - Start buying NOW (25% position)
+                                - Add on dips (3 tranches total)
+                                - Average cost = key to success
+                                - Entry range: Rp {row['Price']*0.97:.0f} - {row['Price']*1.02:.0f}
+                                
+                                📈 **Targets:**
+                                - Conservative: +15% (Rp {row['Price']*1.15:.0f})
+                                - Aggressive: +25-40% (Rp {row['Price']*1.25:.0f} - {row['Price']*1.40:.0f})
+                                - Timeline: 2-8 weeks
+                                
+                                🛑 **Stop Loss:**
+                                - Below support: Rp {row['Price']*0.92:.0f} (-8%)
+                                - Exit if distribution signals appear
+                                
+                                💡 **Pro Tip:**
+                                This is THE BEST time to buy! Smart money is accumulating.
+                                Patience will be rewarded. HOLD through markup phase.
+                                """)
+                                
+                                col1, col2 = st.columns(2)
+                                if col1.button(f"💾 Track", key=f"t{row['Ticker']}", use_container_width=True):
+                                    save_recommendation(row['Ticker'].replace('.JK',''), 
+                                                      "Bandar - Akumulasi", 
+                                                      row['Score'], row['Confidence'], 
+                                                      row['Price'], "STRONG BUY")
+                                    st.success("✅ Added to tracking!")
+                                
+                                if col2.button(f"🔖 Watch", key=f"w{row['Ticker']}", use_container_width=True):
+                                    add_to_watchlist(row['Ticker'].replace('.JK',''), 
+                                                    "Bandar - Akumulasi",
+                                                    row['Score'], row['Confidence'], 
+                                                    row['Price'] * 0.97,
+                                                    notes="Accumulation phase - prime buy zone")
+                                    st.success("✅ Added to watchlist!")
+                            
+                            elif '🚀' in row['Phase']:  # Markup
+                                st.info(f"""
+                                **🚀 MARKUP PHASE - TREND FOLLOWING ZONE**
+                                
+                                ✅ **What's Happening:**
+                                - {row['Signal']}
+                                - Smart money driving price up
+                                - Momentum established
+                                
+                                📊 **If Already In Position:**
+                                - ✅ HOLD your position
+                                - ✅ Trail stop loss below swing lows
+                                - ✅ Take partial profits at resistance
+                                - ✅ Let winners run!
+                                
+                                🆕 **If Entering Now:**
+                                - Wait for pullback to support (Rp {row['Price']*0.96:.0f})
+                                - Smaller position size (risk higher than accumulation)
+                                - Quick profits, don't overstay
+                                - Entry: Only on 3-5% dip
+                                
+                                🎯 **Targets:**
+                                - Short-term: +8-12% (Rp {row['Price']*1.08:.0f} - {row['Price']*1.12:.0f})
+                                - Medium-term: +15-25% (if momentum continues)
+                                
+                                🛑 **Exit Signals:**
+                                - Volume spike without price gain
+                                - Break below major support
+                                - Distribution phase begins
+                                
+                                💡 **Pro Tip:**
+                                The trend is your friend, BUT be ready to exit quickly.
+                                Late entries = higher risk. Watch for distribution!
+                                """)
+                                
+                                col1, col2 = st.columns(2)
+                                if col1.button(f"💾 Track", key=f"t{row['Ticker']}", use_container_width=True):
+                                    save_recommendation(row['Ticker'].replace('.JK',''), 
+                                                      "Bandar - Markup", 
+                                                      row['Score'], row['Confidence'], 
+                                                      row['Price'], "BUY")
+                                    st.success("✅ Added to tracking!")
+                                
+                                if col2.button(f"🔖 Wait for Pullback", key=f"w{row['Ticker']}", use_container_width=True):
+                                    add_to_watchlist(row['Ticker'].replace('.JK',''), 
+                                                    "Bandar - Markup",
+                                                    row['Score'], row['Confidence'], 
+                                                    row['Price'] * 0.95,
+                                                    notes="Wait for 5% pullback before entry")
+                                    st.success("✅ Added to watchlist - will alert on pullback!")
+                            
+                            elif '🔴' in row['Phase']:  # Distribusi
+                                st.error(f"""
+                                **🔴 DISTRIBUTION PHASE - EXTREME DANGER ZONE!**
+                                
+                                🚨 **What's Happening:**
+                                - {row['Signal']}
+                                - Smart money is SELLING
+                                - Retail buying from institutions
+                                - Top formation in progress
+                                
+                                ⛔ **If You're In This Stock:**
+                                - 🚨 EXIT IMMEDIATELY - NO QUESTIONS!
+                                - Don't wait for "confirmation"
+                                - Don't hope for recovery
+                                - Cut losses NOW while you can
+                                - Smart money is dumping on you
+                                
+                                ❌ **If You're Not In:**
+                                - DO NOT BUY - NO MATTER WHAT!
+                                - Ignore the "dip buying" urge
+                                - This is NOT a buying opportunity
+                                - Stay away completely
+                                
+                                📉 **What's Coming Next:**
+                                - Markdown phase (sharp decline)
+                                - Expected drop: 15-40%
+                                - Timeline: 2-8 weeks
+                                - Pain for late buyers
+                                
+                                ⏰ **When to Consider Again:**
+                                - After markdown completes
+                                - New accumulation phase starts
+                                - Might take 2-6 months
+                                
+                                💡 **Critical Lesson:**
+                                Smart money sells at tops, buys at bottoms.
+                                Don't be the exit liquidity! Preserve capital!
+                                """)
+                            
+                            else:  # Sideways
+                                st.warning(f"""
+                                **⚪ SIDEWAYS PHASE - NO CLEAR EDGE**
+                                
+                                📊 **Current Situation:**
+                                - {row['Signal']}
+                                - Mixed signals
+                                - Market indecision
+                                - No clear smart money activity
+                                
+                                ⏸️ **Recommended Action:**
+                                - WAIT for clearer signal
+                                - Don't force a trade
+                                - Patience is profitable
+                                - Watch for pattern change
+                                
+                                👀 **Watch For These Signals:**
+                                
+                                **Bullish Signs:**
+                                - Volume increase + Price steady = Possible accumulation
+                                - OBV rising while price flat = Hidden buying
+                                - Breakout above resistance = Markup starting
+                                
+                                **Bearish Signs:**
+                                - High volume + No breakout = Distribution
+                                - OBV falling + Price flat = Hidden selling
+                                - Break below support = Markdown starting
+                                
+                                💡 **Pro Tip:**
+                                Not every stock is tradeable all the time.
+                                The best trade is sometimes NO trade.
+                                Wait for AKUMULASI phase!
+                                """)
+                                
+                                if st.button(f"🔖 Add to Watchlist", key=f"w{row['Ticker']}", use_container_width=True):
+                                    add_to_watchlist(row['Ticker'].replace('.JK',''), 
+                                                    "Bandar - Sideways",
+                                                    row['Score'], row['Confidence'], 
+                                                    row['Price'],
+                                                    notes="Waiting for accumulation signal")
+                                    st.success("✅ Will alert when phase changes!")
+                            
+                            # All bandar details
+                            st.markdown("---")
+                            st.markdown("### 📋 Complete Bandar Metrics")
+                            details_col1, details_col2 = st.columns(2)
+                            
+                            with details_col1:
+                                for k, v in list(row['Details'].items())[:len(row['Details'])//2]:
+                                    if 'Action' in k or 'BUY' in str(v):
+                                        st.success(f"**{k}:** {v}")
+                                    elif 'SELL' in str(v) or 'AVOID' in str(v):
+                                        st.error(f"**{k}:** {v}")
+                                    else:
+                                        st.info(f"**{k}:** {v}")
+                            
+                            with details_col2:
+                                for k, v in list(row['Details'].items())[len(row['Details'])//2:]:
+                                    if 'Target' in k:
+                                        st.success(f"**{k}:** {v}")
+                                    elif 'Risk' in k:
+                                        if 'LOW' in str(v):
+                                            st.success(f"**{k}:** {v}")
+                                        elif 'HIGH' in str(v) or 'VERY HIGH' in str(v):
+                                            st.error(f"**{k}:** {v}")
+                                        else:
+                                            st.warning(f"**{k}:** {v}")
+                                    else:
+                                        st.info(f"**{k}:** {v}")
+                    
+                    # Download results
+                    csv = filtered[show_cols].to_csv(index=False).encode()
+                    st.download_button("📥 Download Bandar Scan Results", csv,
+                                     f"bandar_scan_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                                     mime="text/csv")
+                    
+                    # Educational footer
+                    st.markdown("---")
+                    st.markdown("### 📚 Understanding Smart Money / Bandar")
+                    
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.info("""
+                        **What is "Bandar" / Smart Money?**
+                        
+                        Bandar (Indonesian) = Big Players = Institutions = Smart Money
+                        
+                        **Who are they:**
+                        - Mutual funds (Reksadana)
+                        - Pension funds
+                        - Insurance companies
+                        - Foreign institutions
+                        - Ultra-wealthy individuals
+                        
+                        **Capital Size:**
+                        - Billions to trillions Rupiah
+                        - Can move markets
+                        - Need weeks/months to build position
+                        
+                        **Strategy:**
+                        - Buy when everyone is selling (accumulation)
+                        - Sell when everyone is buying (distribution)
+                        - Patient, systematic, disciplined
+                        
+                        **Footprints:**
+                        - Volume patterns
+                        - OBV (On-Balance Volume)
+                        - Price action vs volume
+                        - Wyckoff patterns
+                        """)
+                    
+                    with col2:
+                        st.success("""
+                        **Your Edge: Follow Their Footprints!**
+                        
+                        **🟢 AKUMULASI Phase** ⭐⭐⭐⭐⭐
+                        - **When:** They're buying quietly
+                        - **What to do:** BUY with them!
+                        - **Risk:** LOWEST
+                        - **Reward:** HIGHEST (15-40%)
+                        - **Timeline:** 2-8 weeks hold
+                        - **Win Rate:** 70-80% if patient
+                        
+                        **🚀 MARKUP Phase** ⭐⭐⭐⭐
+                        - **When:** They're driving price up
+                        - **What to do:** HOLD or ride momentum
+                        - **Risk:** MEDIUM
+                        - **Reward:** GOOD (10-25%)
+                        - **Timeline:** 1-4 weeks
+                        - **Win Rate:** 60-70%
+                        
+                        **🔴 DISTRIBUSI Phase** ⭐
+                        - **When:** They're selling to retail
+                        - **What to do:** AVOID / EXIT!
+                        - **Risk:** VERY HIGH
+                        - **Reward:** NEGATIVE
+                        - **Result:** -15% to -40%
+                        - **Win Rate:** <20% (for buyers)
+                        
+                        **💡 Golden Rule:**
+                        Buy in AKUMULASI, Hold through MARKUP,
+                        Sell BEFORE distribution!
+                        """)
+                    
+                    # Quick reference
+                    st.markdown("---")
+                    st.markdown("### 🎯 Quick Reference Card")
+                    
+                    st.warning("""
+                    **CRITICAL DECISION TREE:**
+                    
+                    1. Is it 🟢 AKUMULASI? → **BUY NOW** (best opportunity)
+                    2. Is it 🚀 MARKUP? → **HOLD** if in, **WAIT FOR DIP** if out
+                    3. Is it 🔴 DISTRIBUSI? → **SELL EVERYTHING** / **STAY AWAY**
+                    4. Is it ⚪ SIDEWAYS? → **WAIT PATIENTLY** for accumulation
+                    
+                    **Remember:**
+                    - Patience in accumulation = Profits in markup
+                    - Greed in distribution = Losses in markdown
+                    - When in doubt, WAIT for 🟢 AKUMULASI!
+                    """)
+
+elif "BPJS" in menu or "BSJP" in menu or "Value" in menu:
     strategy_map = {
         "3️⃣ BPJS": ("BPJS", "⚡ BPJS Scanner", "Day Trading - High Volatility Plays"),
         "4️⃣ BSJP": ("BSJP", "🌙 BSJP Scanner", "Overnight Trading - Gap Recovery"),
-        "5️⃣ Bandar Tracking": ("Bandar", "🎯 Bandar Tracker", "Smart Money Accumulation"),
         "6️⃣ Value Hunting": ("Value", "💎 Value Hunter", "Undervalued Reversal Plays")
     }
     strategy, title, description = strategy_map[menu]
@@ -1406,12 +2290,12 @@ elif "BPJS" in menu or "BSJP" in menu or "Bandar" in menu or "Value" in menu:
     st.markdown(f"### {title}")
     st.caption(description)
     
-    # Timing alert for BPJS/BSJP
+    # Timing alerts
     if strategy == "BPJS":
         if is_valid_bpjs_time():
             st.success("✅ OPTIMAL BPJS ENTRY TIME (09:00-09:30 WIB)")
         else:
-            st.warning("⏰ Best BPJS time: 09:00-09:30 WIB tomorrow")
+            st.warning("⏰ Best BPJS time: 09:00-09:30 WIB")
             st.caption("💡 BPJS works best at market open with high volatility")
     
     elif strategy == "BSJP":
@@ -1427,40 +2311,29 @@ elif "BPJS" in menu or "BSJP" in menu or "Bandar" in menu or "Value" in menu:
         
         if df.empty:
             st.warning(f"⚠️ No {strategy} signals found")
-            st.info(f"""
-            **Possible reasons:**
-            - Market conditions don't favor {strategy}
-            - Increase the number of stocks scanned
-            - Lower minimum score/confidence filters
-            - Try different time period
-            """)
         else:
             df = df[(df["Score"] >= min_score) & (df["Confidence"] >= min_confidence)]
             
             if df.empty:
-                st.warning(f"No stocks with Score>={min_score} AND Confidence>={min_confidence}")
-                st.info("Try lowering your filters in the sidebar")
+                st.warning(f"No stocks meeting criteria")
             else:
                 st.success(f"✅ Found {len(df)} {strategy} opportunities!")
                 
-                # Summary metrics
                 col1, col2, col3, col4 = st.columns(4)
                 col1.metric("Avg Score", f"{df['Score'].mean():.1f}")
                 col2.metric("Avg Conf", f"{df['Confidence'].mean():.1f}%")
                 col3.metric("Strong Buy", len(df[df['Signal'] == 'STRONG BUY']))
                 col4.metric("Buy", len(df[df['Signal'] == 'BUY']))
                 
-                # Data table
                 show = df[["Ticker","Price","Score","Confidence","Signal","EntryIdeal","TP1","TP2","SL"]]
                 st.dataframe(show, use_container_width=True, height=400)
                 
-                # Top recommendations
                 st.markdown(f"### 🏆 Top {min(15, len(df))} Recommendations")
                 
                 for _, row in df.head(15).iterrows():
                     conf_color = "🟢" if row['Confidence'] >= 80 else "🟡" if row['Confidence'] >= 60 else "🟠"
                     
-                    with st.expander(f"{conf_color} {row['Ticker']} - Score: {row['Score']} | Conf: {row['Confidence']}% | {row['Signal']}"):
+                    with st.expander(f"{conf_color} {row['Ticker']} - {row['Score']} | {row['Confidence']}% | {row['Signal']}"):
                         col1, col2 = st.columns(2)
                         
                         with col1:
@@ -1481,112 +2354,33 @@ elif "BPJS" in menu or "BSJP" in menu or "Bandar" in menu or "Value" in menu:
                                     st.markdown(f"**⚖️ R:R:** 1:{rr:.2f}")
                         
                         st.markdown("---")
-                        st.markdown("**📋 Technical Details:**")
                         for k, v in row['Details'].items():
-                            if '⛔' in str(k) or '❌' in str(k):
+                            if '⛔' in str(k):
                                 st.error(f"- **{k}:** {v}")
                             elif '⚠️' in str(k):
                                 st.warning(f"- **{k}:** {v}")
                             else:
                                 st.info(f"- **{k}:** {v}")
                         
-                        # Action buttons
                         col1, col2 = st.columns(2)
-                        if col1.button(f"💾 Track", key=f"t{row['Ticker']}"):
+                        if col1.button(f"💾 Track", key=f"t{row['Ticker']}", use_container_width=True):
                             save_recommendation(row['Ticker'].replace('.JK',''), strategy, 
                                               row['Score'], row['Confidence'], 
                                               row['Price'], row['Signal'])
-                            st.success("✅ Added to tracking!")
+                            st.success("✅ Tracked!")
                         
-                        if col2.button(f"🔖 Watch", key=f"w{row['Ticker']}"):
+                        if col2.button(f"🔖 Watch", key=f"w{row['Ticker']}", use_container_width=True):
                             add_to_watchlist(row['Ticker'].replace('.JK',''), strategy,
                                            row['Score'], row['Confidence'], 
                                            row['EntryIdeal'] if row['EntryIdeal'] else row['Price'])
-                            st.success("✅ Added to watchlist!")
+                            st.success("✅ Watchlisted!")
                 
-                # Download CSV
                 csv = show.to_csv(index=False).encode()
                 st.download_button("📥 Download CSV", csv, 
                                  f"{strategy}_{datetime.now().strftime('%Y%m%d_%H%M')}.csv")
-                
-                # Strategy-specific tips
-                st.markdown("---")
-                st.markdown("### 💡 Strategy Tips")
-                
-                if strategy == "BPJS":
-                    st.info("""
-                    **BPJS (Beli Pagi Jual Sore) - Day Trading**
-                    
-                    ✅ **Best Practices:**
-                    - Enter: 09:00-09:30 WIB (high volatility window)
-                    - Exit: Before 14:00 WIB (don't hold overnight)
-                    - Target: 2-5% intraday gain
-                    - Stop Loss: 2-3% maximum
-                    
-                    ⚠️ **Watch Out:**
-                    - Fake volume spikes
-                    - News-driven gaps (can reverse fast)
-                    - Low liquidity stocks
-                    
-                    📊 **Position Size:** Start with 50% normal size until proven
-                    """)
-                
-                elif strategy == "BSJP":
-                    st.info("""
-                    **BSJP (Beli Sore Jual Pagi) - Overnight Trading**
-                    
-                    ✅ **Best Practices:**
-                    - Enter: 14:00-15:00 WIB (at closing, gap down -1% to -3%)
-                    - Exit: Next day 09:30-10:30 WIB (gap recovery)
-                    - Target: 2-4% recovery bounce
-                    - Stop Loss: -3% from entry
-                    
-                    ⚠️ **Watch Out:**
-                    - Check for bad news causing the gap
-                    - Avoid if market sentiment very negative
-                    - Don't hold if gap widens at open
-                    
-                    📊 **Risk:** Higher than BPJS due to overnight exposure
-                    """)
-                
-                elif strategy == "Bandar":
-                    st.info("""
-                    **Bandar Tracking - Smart Money Following**
-                    
-                    ✅ **Best Practices:**
-                    - Look for AKUMULASI phase (volume up, price sideways)
-                    - Enter early in accumulation, before markup
-                    - Hold through markup phase
-                    - Exit in distribution phase
-                    
-                    ⚠️ **Watch Out:**
-                    - False accumulation (pump & dump)
-                    - Enter ONLY in green phase
-                    - Avoid red distribution phase
-                    
-                    📊 **Timeline:** Medium-term hold (weeks to months)
-                    """)
-                
-                elif strategy == "Value":
-                    st.info("""
-                    **Value Hunting - Contrarian Plays**
-                    
-                    ✅ **Best Practices:**
-                    - Buy near 52-week lows with reversal signs
-                    - Need volume confirmation
-                    - Price must cross above 20 SMA
-                    - RSI bounce from oversold
-                    
-                    ⚠️ **Watch Out:**
-                    - Falling knives (no reversal signs)
-                    - Deteriorating fundamentals
-                    - Sector-wide downtrend
-                    
-                    📊 **Timeline:** Swing trade (1-4 weeks for reversal)
-                    """)
 
 else:  # Full Screener
-    st.markdown("### 🚀 Full Screener - All Strategies Combined")
+    st.markdown("### 🚀 Full Screener - Complete Market Analysis")
     
     col1, col2, col3, col4 = st.columns(4)
     col1.info(f"📊 **Stocks**\n{limit}")
@@ -1595,45 +2389,34 @@ else:  # Full Screener
     col4.info(f"⚡ **Mode**\n{'Parallel' if use_parallel else 'Sequential'}")
     
     if st.button("🚀 Run Full Screener", type="primary"):
-        with st.spinner(f"Scanning {limit} stocks with full analysis..."):
+        with st.spinner(f"Full analysis on {limit} stocks..."):
             df = batch_scan(tickers, "Full Screener", period, limit, use_parallel)
         
         if df.empty:
-            st.warning("⚠️ No stocks found matching criteria")
-            st.info("""
-            **Try adjusting:**
-            - Lower minimum score/confidence filters
-            - Increase number of stocks scanned
-            - Change time period
-            - Check if market is in downtrend
-            """)
+            st.warning("⚠️ No stocks found")
         else:
             df = df[(df["Score"] >= min_score) & (df["Confidence"] >= min_confidence)]
             
             if df.empty:
-                st.warning(f"No stocks with Score>={min_score} AND Confidence>={min_confidence}")
-                st.info("💡 Lower your filters in the sidebar to see more results")
+                st.warning(f"No stocks meeting criteria")
             else:
                 st.success(f"✅ Found {len(df)} quality opportunities!")
                 
-                # Summary metrics
                 col1, col2, col3, col4 = st.columns(4)
                 col1.metric("Avg Score", f"{df['Score'].mean():.1f}/100")
                 col2.metric("Avg Confidence", f"{df['Confidence'].mean():.1f}%")
                 col3.metric("Strong Buy", len(df[df['Signal'] == 'STRONG BUY']))
                 col4.metric("Buy", len(df[df['Signal'] == 'BUY']))
                 
-                # Data table
                 show = df[["Ticker","Price","Score","Confidence","Signal","Trend","EntryIdeal","TP1","TP2","SL"]]
                 st.dataframe(show, use_container_width=True, height=400)
                 
-                # Top recommendations
                 st.markdown("### 🏆 Top 15 Recommendations")
                 
                 for _, row in df.head(15).iterrows():
                     conf_color = "🟢" if row['Confidence'] >= 80 else "🟡" if row['Confidence'] >= 60 else "🟠"
                     
-                    with st.expander(f"{conf_color} {row['Ticker']} - Score: {row['Score']} | Conf: {row['Confidence']}% | {row['Signal']}"):
+                    with st.expander(f"{conf_color} {row['Ticker']} - {row['Score']} | {row['Confidence']}% | {row['Signal']}"):
                         col1, col2 = st.columns(2)
                         
                         with col1:
@@ -1655,7 +2438,6 @@ else:  # Full Screener
                                     rr = (row['TP1'] - row['EntryIdeal']) / (row['EntryIdeal'] - row['SL'])
                                     st.markdown(f"**⚖️ Risk:Reward:** 1:{rr:.2f}")
                         
-                        # 3-lot strategy display
                         if row['EntryIdeal']:
                             st.markdown("---")
                             st.markdown("**📊 3-Lot Strategy:**")
@@ -1664,40 +2446,35 @@ else:  # Full Screener
                             🎯 **Lot 1/3:** Exit at Rp {three_lot['lot1_tp']:,.0f} (+8%)
                             🎯 **Lot 2/3:** Exit at Rp {three_lot['lot2_tp']:,.0f} (+15%)
                             🏃 **Lot 3/3:** {three_lot['lot3_trail']}
-                            🛑 **Stop Loss:** Rp {three_lot['initial_sl']:,.0f} for all
+                            🛑 **Stop Loss:** Rp {three_lot['initial_sl']:,.0f}
                             """)
                         
                         st.markdown("---")
-                        st.markdown("**📋 Technical Details:**")
                         for k, v in row['Details'].items():
-                            if '⛔' in str(k) or '❌' in str(k):
+                            if '⛔' in str(k):
                                 st.error(f"- **{k}:** {v}")
                             elif '⚠️' in str(k):
                                 st.warning(f"- **{k}:** {v}")
                             else:
                                 st.info(f"- **{k}:** {v}")
                         
-                        # Action buttons
                         col1, col2 = st.columns(2)
-                        if col1.button(f"💾 Track This", key=f"track_{row['Ticker']}"):
+                        if col1.button(f"💾 Track", key=f"track_{row['Ticker']}", use_container_width=True):
                             save_recommendation(row['Ticker'].replace('.JK',''), "Full Screener", 
                                               row['Score'], row['Confidence'], 
                                               row['Price'], row['Signal'])
-                            st.success("✅ Added to tracking!")
+                            st.success("✅ Tracked!")
                         
-                        if col2.button(f"🔖 Add to Watchlist", key=f"watch_{row['Ticker']}"):
+                        if col2.button(f"🔖 Watchlist", key=f"watch_{row['Ticker']}", use_container_width=True):
                             add_to_watchlist(row['Ticker'].replace('.JK',''), "Full Screener",
                                            row['Score'], row['Confidence'], 
                                            row['EntryIdeal'] if row['EntryIdeal'] else row['Price'])
-                            st.success("✅ Added to watchlist!")
+                            st.success("✅ Watchlisted!")
                 
-                # Download CSV
                 csv = show.to_csv(index=False).encode()
-                st.download_button("📥 Download Results (CSV)", csv, 
-                                 f"full_screener_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-                                 mime="text/csv")
+                st.download_button("📥 Download CSV", csv, 
+                                 f"screener_{datetime.now().strftime('%Y%m%d_%H%M')}.csv")
                 
-                # Trading tips
                 st.markdown("---")
                 st.markdown("### 💡 Trading Guidelines")
                 
@@ -1722,13 +2499,13 @@ else:  # Full Screener
                     st.warning("""
                     **⚠️ Use Caution:**
                     - Confidence < 60%
-                    - Overbought warnings present
+                    - Overbought warnings
                     - Volume quality concerns
                     - Market in downtrend
                     
                     **🛑 Avoid:**
-                    - Trading during lunch (12:00-13:00 WIB)
-                    - Entering without stop loss
+                    - Trading during lunch
+                    - Entering without SL
                     - Averaging down on losers
                     - Ignoring position size limits
                     """)
@@ -1736,12 +2513,12 @@ else:  # Full Screener
                 st.info("""
                 **📊 Your Recovery Plan (Target: 60%+ Win Rate)**
                 
-                1. **Selection:** Only trade signals with 70+ confidence
-                2. **Entry:** Wait for ideal entry levels (don't chase)
-                3. **Position Size:** Risk only 2% per trade maximum
-                4. **Management:** Use 3-lot strategy religiously
-                5. **Tracking:** Record EVERY trade in Active Positions
-                6. **Review:** Weekly analysis in Performance tab
+                1. **Selection:** Only 70+ confidence signals
+                2. **Entry:** Wait for ideal entry levels
+                3. **Position Size:** Risk only 2% max
+                4. **Management:** Use 3-lot strategy
+                5. **Tracking:** Record EVERY trade
+                6. **Review:** Weekly analysis
                 
-                💪 **Current Focus:** Build consistency before scaling up!
+                💪 **Focus:** Consistency before scaling!
                 """)
