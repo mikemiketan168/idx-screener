@@ -1030,53 +1030,31 @@ def display_score_breakdown(details, score, confidence):
 
 # ============= PROCESS =============
 def process_ticker(ticker, strategy, period):
+    """Process single ticker with strategy"""
     try:
         df = fetch_data(ticker, period)
         if df is None or len(df) < 50:
             return None
         
         price = float(df['Close'].iloc[-1])
+        bandar_phase = "N/A"
         
-        # Run appropriate strategy scoring
         if strategy == "BPJS":
             score, details, confidence = score_bpjs_v3(df)
-            bandar_phase = "N/A"
         elif strategy == "BSJP":
             score, details, confidence = score_bsjp_v3(df)
-            bandar_phase = "N/A"
         elif strategy == "Bandar":
             score, details, phase, confidence = score_bandar_v3(df)
             details['Phase'] = phase
             bandar_phase = phase
         elif strategy == "Value":
             score, details, confidence = score_value_v3(df)
-            bandar_phase = "N/A"
-        else:  # Full Screener
+        else:
             score, details, confidence = score_full_screener_v3(df)
-            
-            # NEW: Add Bandar check for Full Screener
-            band_score, band_details, bandar_phase, band_conf = score_bandar_v3(df)
-            
-            # Add warnings if Bandar phase is bad
-            warnings = []
-            if '⚫' in bandar_phase:  # MARKDOWN
-                warnings.append("⚫ MARKDOWN")
-            elif '🔴' in bandar_phase:  # DISTRIBUSI
-                warnings.append("🔴 DISTRIBUSI")
-            
-            # Optional: Check 1MO timeframe for conflicts
             try:
-                df_1mo = fetch_data(ticker, "1mo")
-                if df_1mo is not None and len(df_1mo) >= 50:
-                    score_1mo, _, conf_1mo = score_full_screener_v3(df_1mo)
-                    if score_1mo < 50 and score > 75:
-                        warnings.append("⚠️ TF_CONFLICT")
+                _, _, bandar_phase, _ = score_bandar_v3(df)
             except:
-                pass
-            
-            # Add warnings to details
-            if warnings:
-                details['⚠️ Warnings'] = " | ".join(warnings)
+                bandar_phase = "⚪ SIDEWAYS"
         
         if score == 0:
             return None
@@ -1084,23 +1062,22 @@ def process_ticker(ticker, strategy, period):
         levels = get_signal_levels(score, price, confidence)
         
         return {
-            "Ticker": ticker, 
-            "Price": price, 
-            "Score": score, 
+            "Ticker": ticker,
+            "Price": price,
+            "Score": score,
             "Confidence": confidence,
-            "Signal": levels["signal"], 
+            "Signal": levels["signal"],
             "Trend": levels["trend"],
-            "Bandar": bandar_phase,  # NEW: Add Bandar phase
-            "EntryIdeal": levels["ideal"]["entry"], 
+            "Bandar": bandar_phase,
+            "EntryIdeal": levels["ideal"]["entry"],
             "EntryAggr": levels["aggr"]["entry"],
-            "TP1": levels["ideal"]["tp1"], 
+            "TP1": levels["ideal"]["tp1"],
             "TP2": levels["ideal"]["tp2"],
-            "SL": levels["ideal"]["sl"], 
+            "SL": levels["ideal"]["sl"],
             "Details": details
         }
     except:
-        return None
-        
+        return None        
         levels = get_signal_levels(score, price, confidence)
         
         return {
