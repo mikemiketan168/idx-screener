@@ -1301,8 +1301,13 @@ elif "Single" in menu:
                     st.markdown(f'<div class="phase-side">{band_phase}</div>', unsafe_allow_html=True)
                 
                 col1, col2 = st.columns(2)
+                
+                # Split bandar details into 2 columns
+                details_list = list(band_details.items())
+                mid_point = len(details_list) // 2
+                
                 with col1:
-                    for k, v in list(band_details.items())[:len(band_details)//2]:
+                    for k, v in details_list[:mid_point]:
                         if 'Action' in k:
                             st.success(f"**{k}:** {v}")
                         elif 'Risk' in k:
@@ -1315,6 +1320,14 @@ elif "Single" in menu:
                         else:
                             st.info(f"**{k}:** {v}")
                 
+                with col2:
+                    for k, v in details_list[mid_point:]:
+                        if 'Target' in k:
+                            st.success(f"**{k}:** {v}")
+                        elif 'DANGER' in str(v) or 'AVOID' in str(v):
+                            st.error(f"**{k}:** {v}")
+                        else:
+                            st.info(f"**{k}:** {v}")
                 with col2:
                     for k, v in list(band_details.items() for k, v in list(band_details.items())[len(band_details)//2:]:
                         if 'Target' in k:
