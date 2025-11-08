@@ -678,7 +678,7 @@ def score_value_v3(df):
         
         high52 = df['High'].tail(252).max() if len(df)>252 else df['High'].max()
         low52 = df['Low'].tail(252).min() if len(df)>252 else df['Low'].min()
-        pos52 = (r['Close']-low pos52 = (r['Close']-low52)/(high52-low52)*100
+        pos52 = (r['Close']-low52)/(high52-low52)*100
         
         if pos52 < 20:
             score += 30
