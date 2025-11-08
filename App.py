@@ -253,61 +253,116 @@ def analyze_multi_timeframe(ticker):
     return results, verdict
 
 # ============= SUPPORT & RESISTANCE FINDER (NEW!) =============
+# ============= SUPPORT & RESISTANCE FINDER (NO SCIPY VERSION) =============
 def find_support_resistance(df, ticker_price):
-    """Find key support and resistance levels"""
+    """Find key support and resistance levels - No scipy version"""
     if df is None or len(df) < 50:
         return None
     
-    # Get recent highs and lows
-    highs = df['High'].tail(100)
-    lows = df['Low'].tail(100)
-    
-    # Find peaks and troughs
-    from scipy.signal import argrelextrema
-    
-    resistance_indices = argrelextrema(highs.values, np.greater, order=5)[0]
-    support_indices = argrelextrema(lows.values, np.less, order=5)[0]
-    
-    resistances = sorted(highs.iloc[resistance_indices].unique(), reverse=True)[:3]
-    supports = sorted(lows.iloc[support_indices].unique(), reverse=True)[:3]
-    
-    # Add current EMAs as dynamic S/R
-    current_ema50 = df['EMA50'].iloc[-1]
-    current_ema200 = df['EMA200'].iloc[-1]
-    
-    # Classify strength based on touch count
-    sr_data = {
-        'resistances': [],
-        'supports': [],
-        'current_price': ticker_price
-    }
-    
-    for i, r in enumerate(resistances):
-        strength = "STRONG" if i == 0 else "MEDIUM" if i == 1 else "WEAK"
-        sr_data['resistances'].append({
-            'level': round(r, 0),
-            'strength': strength,
-            'distance_pct': ((r - ticker_price) / ticker_price * 100)
-        })
-    
-    for i, s in enumerate(supports):
-        strength = "STRONG" if i == 0 else "MEDIUM" if i == 1 else "WEAK"
-        sr_data['supports'].append({
-            'level': round(s, 0),
-            'strength': strength,
-            'distance_pct': ((ticker_price - s) / ticker_price * 100)
-        })
-    
-    # Add EMAs
-    if current_ema50 < ticker_price:
-        sr_data['supports'].append({
-            'level': round(current_ema50, 0),
-            'strength': 'DYNAMIC',
-            'distance_pct': ((ticker_price - current_ema50) / ticker_price * 100),
-            'type': 'EMA50'
-        })
-    
-    return sr_data
+    try:
+        # Get recent price action
+        recent_df = df.tail(100)
+        
+        # Find resistance levels (local highs)
+        resistances = []
+        for i in range(5, len(recent_df) - 5):
+            current_high = recent_df['High'].iloc[i]
+            # Check if it's a local maximum
+            is_peak = True
+            for j in range(max(0, i-5), min(len(recent_df), i+6)):
+                if j != i and recent_df['High'].iloc[j] > current_high:
+                    is_peak = False
+                    break
+            
+            if is_peak and current_high > ticker_price:
+                resistances.append(current_high)
+        
+        # Find support levels (local lows)
+        supports = []
+        for i in range(5, len(recent_df) - 5):
+            current_low = recent_df['Low'].iloc[i]
+            # Check if it's a local minimum
+            is_trough = True
+            for j in range(max(0, i-5), min(len(recent_df), i+6)):
+                if j != i and recent_df['Low'].iloc[j] < current_low:
+                    is_trough = False
+                    break
+            
+            if is_trough and current_low < ticker_price:
+                supports.append(current_low)
+        
+        # Remove duplicates and sort
+        resistances = sorted(list(set([round(r, -1) for r in resistances])))[:3]
+        supports = sorted(list(set([round(s, -1) for s in supports])), reverse=True)[:3]
+        
+        # Add EMAs as dynamic support/resistance
+        current_ema50 = df['EMA50'].iloc[-1]
+        current_ema200 = df['EMA200'].iloc[-1]
+        
+        sr_data = {
+            'resistances': [],
+            'supports': [],
+            'current_price': ticker_price
+        }
+        
+        # Add resistances
+        for i, r in enumerate(resistances):
+            strength = "STRONG" if i == 0 else "MEDIUM" if i == 1 else "WEAK"
+            sr_data['resistances'].append({
+                'level': round(r, 0),
+                'strength': strength,
+                'distance_pct': ((r - ticker_price) / ticker_price * 100)
+            })
+        
+        # Add supports
+        for i, s in enumerate(supports):
+            strength = "STRONG" if i == 0 else "MEDIUM" if i == 1 else "WEAK"
+            sr_data['supports'].append({
+                'level': round(s, 0),
+                'strength': strength,
+                'distance_pct': ((ticker_price - s) / ticker_price * 100)
+            })
+        
+        # Add EMA50 as dynamic support if below price
+        if current_ema50 < ticker_price:
+            sr_data['supports'].append({
+                'level': round(current_ema50, 0),
+                'strength': 'DYNAMIC',
+                'distance_pct': ((ticker_price - current_ema50) / ticker_price * 100),
+                'type': 'EMA50'
+            })
+        
+        # Add EMA200 as major support/resistance
+        if current_ema200 < ticker_price:
+            sr_data['supports'].append({
+                'level': round(current_ema200, 0),
+                'strength': 'MAJOR',
+                'distance_pct': ((ticker_price - current_ema200) / ticker_price * 100),
+                'type': 'EMA200'
+            })
+        elif current_ema200 > ticker_price:
+            sr_data['resistances'].append({
+                'level': round(current_ema200, 0),
+                'strength': 'MAJOR',
+                'distance_pct': ((current_ema200 - ticker_price) / ticker_price * 100),
+                'type': 'EMA200'
+            })
+        
+        return sr_data
+        
+    except Exception as e:
+        # Fallback: Return simple EMA-based S/R
+        return {
+            'resistances': [
+                {'level': round(ticker_price * 1.05, 0), 'strength': 'ESTIMATED', 'distance_pct': 5.0},
+                {'level': round(ticker_price * 1.10, 0), 'strength': 'ESTIMATED', 'distance_pct': 10.0}
+            ],
+            'supports': [
+                {'level': round(ticker_price * 0.95, 0), 'strength': 'ESTIMATED', 'distance_pct': 5.0},
+                {'level': round(ticker_price * 0.90, 0), 'strength': 'ESTIMATED', 'distance_pct': 10.0}
+            ],
+            'current_price': ticker_price
+        }
 
 # ============= VALIDATION =============
 def validate_not_downtrend(df):
@@ -1239,30 +1294,65 @@ elif "Single" in menu:
                                 st.error("❌ Bearish")
                 
                 # Support & Resistance
+                # Support & Resistance
                 st.markdown("---")
                 st.markdown("### 📊 Support & Resistance Levels")
                 
-                sr_data = find_support_resistance(df, price)
-                
-                if sr_data:
-                    col1, col2 = st.columns(2)
+                try:
+                    sr_data = find_support_resistance(df, price)
                     
-                    with col1:
-                        st.markdown("**🔴 RESISTANCE LEVELS**")
-                        for r in sr_data['resistances']:
-                            strength_color = "🔴" if r['strength'] == "STRONG" else "🟠" if r['strength'] == "MEDIUM" else "🟡"
-                            st.info(f"{strength_color} **R{sr_data['resistances'].index(r)+1}:** Rp {r['level']:,.0f} ({r['strength']}) - {r['distance_pct']:+.1f}%")
-                    
-                    with col2:
-                        st.markdown("**🟢 SUPPORT LEVELS**")
-                        for s in sr_data['supports']:
-                            if 'type' in s:
-                                strength_color = "🔵"
-                                st.success(f"{strength_color} **{s['type']}:** Rp {s['level']:,.0f} (DYNAMIC) - {s['distance_pct']:+.1f}%")
+                    if sr_data and (sr_data['resistances'] or sr_data['supports']):
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            st.markdown("**🔴 RESISTANCE LEVELS**")
+                            if sr_data['resistances']:
+                                for idx, r in enumerate(sr_data['resistances']):
+                                    strength_color = "🔴" if r['strength'] == "STRONG" else "🟠" if r['strength'] == "MEDIUM" else "🟡"
+                                    level_type = f" ({r.get('type', '')})" if 'type' in r else ""
+                                    st.info(f"{strength_color} **R{idx+1}:** Rp {r['level']:,.0f} ({r['strength']}){level_type} - {r['distance_pct']:+.1f}%")
                             else:
-                                strength_color = "🟢" if s['strength'] == "STRONG" else "🟡" if s['strength'] == "MEDIUM" else "⚪"
-                                st.success(f"{strength_color} **S{sr_data['supports'].index(s)+1}:** Rp {s['level']:,.0f} ({s['strength']}) - {s['distance_pct']:+.1f}%")
-                
+                                st.caption("No clear resistance detected")
+                        
+                        with col2:
+                            st.markdown("**🟢 SUPPORT LEVELS**")
+                            if sr_data['supports']:
+                                for idx, s in enumerate(sr_data['supports']):
+                                    if 'type' in s:
+                                        strength_color = "🔵"
+                                        st.success(f"{strength_color} **{s['type']}:** Rp {s['level']:,.0f} ({s['strength']}) - {s['distance_pct']:+.1f}%")
+                                    else:
+                                        strength_color = "🟢" if s['strength'] == "STRONG" else "🟡" if s['strength'] == "MEDIUM" else "⚪"
+                                        st.success(f"{strength_color} **S{idx+1}:** Rp {s['level']:,.0f} ({s['strength']}) - {s['distance_pct']:+.1f}%")
+                            else:
+                                st.caption("No clear support detected")
+                        
+                        # Trading plan based on S/R
+                        if sr_data['supports'] and sr_data['resistances']:
+                            st.markdown("---")
+                            st.markdown("### 🎯 S/R Based Trading Plan")
+                            
+                            nearest_support = sr_data['supports'][0]
+                            nearest_resistance = sr_data['resistances'][0]
+                            
+                            entry_zone = nearest_support['level']
+                            target_zone = nearest_resistance['level']
+                            sl_zone = entry_zone * 0.96
+                            
+                            risk_reward = (target_zone - entry_zone) / (entry_zone - sl_zone) if (entry_zone - sl_zone) > 0 else 0
+                            
+                            st.info(f"""
+                            **Optimal Entry:** Near support at Rp {entry_zone:,.0f}
+                            **Target:** Resistance at Rp {target_zone:,.0f} ({((target_zone-entry_zone)/entry_zone*100):+.1f}%)
+                            **Stop Loss:** Below support at Rp {sl_zone:,.0f}
+                            **Risk:Reward:** 1:{risk_reward:.2f} {'✅' if risk_reward >= 2 else '⚠️'}
+                            """)
+                    else:
+                        st.info("📊 S/R levels will be calculated with more data")
+                        
+                except Exception as e:
+                    st.warning("⚠️ Support/Resistance analysis unavailable. Using standard entry levels.")
+               
                 # Bandar Analysis
                 st.markdown("---")
                 st.markdown("### 🎯 Bandar / Smart Money Analysis")
