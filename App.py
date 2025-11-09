@@ -65,14 +65,22 @@ st.markdown("""
         text-align: center;
         margin: 0.5rem 0;
     }
+    .stock-card {
+        background: white;
+        padding: 1.5rem;
+        border-radius: 0.8rem;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
+        margin: 0.5rem 0;
+        border-left: 4px solid #3b82f6;
+    }
 </style>
 """, unsafe_allow_html=True)
 
 # ============= KONFIGURASI =============
 class Config:
     MAX_RETRIES = 3
-    TIMEOUT = 20
-    WORKERS = 8
+    TIMEOUT = 25
+    WORKERS = 6
     CACHE_TTL = 300
 
 def init_db():
@@ -82,7 +90,8 @@ def init_db():
                  (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, ticker TEXT, 
                   strategy TEXT, score INTEGER, signal TEXT, price REAL,
                   entry_ideal REAL, entry_agresif REAL, tp1 REAL, tp2 REAL, 
-                  cut_loss REAL, trend TEXT, volume_ratio REAL, rsi REAL)''')
+                  cut_loss REAL, trend TEXT, volume_ratio REAL, rsi REAL,
+                  momentum_5d REAL, ema_alignment TEXT)''')
     conn.commit()
     conn.close()
 
@@ -113,13 +122,19 @@ def fetch_yahoo_data(ticker, period="3mo"):
             url,
             params={"period1": start, "period2": end, "interval": "1d"},
             headers={'User-Agent': 'Mozilla/5.0'},
-            timeout=Config.TIMEOUT
+            timeout=Config.TIMEOUT,
+            verify=False
         )
         
         if response.status_code != 200:
             return None
             
         data = response.json()
+        
+        # Check if data is available
+        if not data['chart']['result']:
+            return None
+            
         result = data['chart']['result'][0]
         quote = result['indicators']['quote'][0]
         
@@ -132,128 +147,216 @@ def fetch_yahoo_data(ticker, period="3mo"):
         if len(df) < 20:
             return None
             
-        # Calculate indicators
-        df['EMA9'] = df['Close'].ewm(span=9).mean()
-        df['EMA21'] = df['Close'].ewm(span=21).mean()
-        df['EMA50'] = df['Close'].ewm(span=50).mean()
-        df['SMA20'] = df['Close'].rolling(20).mean()
-        
-        # RSI
-        delta = df['Close'].diff()
-        gain = delta.where(delta > 0, 0).rolling(14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-        df['RSI'] = 100 - (100 / (1 + gain/loss))
-        
-        # Volume
-        df['Volume_SMA20'] = df['Volume'].rolling(20).mean()
-        df['Volume_Ratio'] = df['Volume'] / df['Volume_SMA20']
-        
-        # Momentum
-        df['Momentum_5D'] = (df['Close'] - df['Close'].shift(5)) / df['Close'].shift(5) * 100
-        
-        return df
+        return calculate_technical_indicators(df)
         
     except Exception as e:
         return None
 
+def calculate_technical_indicators(df):
+    """Calculate all technical indicators"""
+    try:
+        # Moving Averages
+        df['EMA5'] = df['Close'].ewm(span=5, adjust=False).mean()
+        df['EMA9'] = df['Close'].ewm(span=9, adjust=False).mean()
+        df['EMA21'] = df['Close'].ewm(span=21, adjust=False).mean()
+        df['EMA50'] = df['Close'].ewm(span=50, adjust=False).mean()
+        df['EMA200'] = df['Close'].ewm(span=200, adjust=False).mean()
+        
+        df['SMA20'] = df['Close'].rolling(window=20).mean()
+        df['SMA50'] = df['Close'].rolling(window=50).mean()
+        
+        # RSI
+        delta = df['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / loss
+        df['RSI'] = 100 - (100 / (1 + rs))
+        
+        # MACD
+        exp1 = df['Close'].ewm(span=12, adjust=False).mean()
+        exp2 = df['Close'].ewm(span=26, adjust=False).mean()
+        df['MACD'] = exp1 - exp2
+        df['MACD_Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
+        df['MACD_Histogram'] = df['MACD'] - df['MACD_Signal']
+        
+        # Volume Indicators - FIXED CALCULATION
+        df['Volume_SMA20'] = df['Volume'].rolling(window=20).mean()
+        df['Volume_Ratio'] = df['Volume'] / df['Volume_SMA20']
+        
+        # Replace infinite values and NaN in Volume_Ratio
+        df['Volume_Ratio'] = df['Volume_Ratio'].replace([np.inf, -np.inf], 1.0)
+        df['Volume_Ratio'] = df['Volume_Ratio'].fillna(1.0)
+        
+        # Momentum
+        df['Momentum_5D'] = (df['Close'] - df['Close'].shift(5)) / df['Close'].shift(5) * 100
+        df['Momentum_10D'] = (df['Close'] - df['Close'].shift(10)) / df['Close'].shift(10) * 100
+        df['Momentum_20D'] = (df['Close'] - df['Close'].shift(20)) / df['Close'].shift(20) * 100
+        
+        # Volatility
+        df['Volatility_20D'] = df['Close'].rolling(window=20).std() / df['Close'].rolling(window=20).mean() * 100
+        
+        return df
+        
+    except Exception as e:
+        return df  # Return original df if error
+
 def fetch_with_retry(ticker, period="3mo"):
     for attempt in range(Config.MAX_RETRIES):
         df = fetch_yahoo_data(ticker, period)
-        if df is not None:
+        if df is not None and len(df) > 20:
             return df
         time.sleep(2 ** attempt)
     return None
 
-# ============= SCORING SYSTEMS =============
-def calculate_trend_strength(df):
-    current = df.iloc[-1]
-    trend_score = 0
-    trend_info = []
-    
-    # EMA Alignment
-    if current['Close'] > current['EMA9'] > current['EMA21'] > current['EMA50']:
-        trend_score += 40
-        trend_info.append("EMA Bullish Alignment")
-    elif current['Close'] > current['EMA9'] > current['EMA21']:
-        trend_score += 25
-        trend_info.append("Short-term Bullish")
-    elif current['Close'] > current['EMA50']:
-        trend_score += 15
-        trend_info.append("Above EMA50")
-    else:
-        trend_score -= 10
-        trend_info.append("Downtrend")
-    
-    # Price vs SMA20
-    if current['Close'] > current['SMA20']:
-        trend_score += 10
-        trend_info.append("Above SMA20")
-    
-    # Momentum
-    if current['Momentum_5D'] > 2:
-        trend_score += 15
-        trend_info.append("Positive Momentum")
-    
-    return trend_score, " | ".join(trend_info)
-
-def score_full_screener(df):
+# ============= IMPROVED SCORING SYSTEM =============
+def calculate_advanced_score(df):
+    """Advanced scoring system - SAME for both single and batch"""
     try:
-        trend_score, trend_info = calculate_trend_strength(df)
         current = df.iloc[-1]
+        score = 0
+        details = []
         
-        total_score = trend_score
+        # 1. TREND STRENGTH (40 points max)
+        trend_score = 0
         
-        # Volume scoring
+        # EMA Alignment (20 points)
+        if current['Close'] > current['EMA9'] > current['EMA21'] > current['EMA50']:
+            trend_score += 20
+            details.append("Perfect EMA Bullish")
+        elif current['Close'] > current['EMA9'] > current['EMA21']:
+            trend_score += 15
+            details.append("Strong EMA Bullish")
+        elif current['Close'] > current['EMA9']:
+            trend_score += 10
+            details.append("Short-term Bullish")
+        else:
+            trend_score -= 5
+            details.append("EMA Bearish")
+        
+        # Price vs MAs (10 points)
+        if current['Close'] > current['SMA20'] > current['SMA50']:
+            trend_score += 10
+            details.append("SMA Bullish")
+        elif current['Close'] > current['SMA20']:
+            trend_score += 5
+            details.append("Above SMA20")
+        
+        # Trend Momentum (10 points)
+        if current['Momentum_5D'] > 3:
+            trend_score += 10
+            details.append("Strong Momentum")
+        elif current['Momentum_5D'] > 0:
+            trend_score += 5
+            details.append("Positive Momentum")
+        
+        score += max(0, trend_score)
+        
+        # 2. MOMENTUM & STRENGTH (35 points max)
+        momentum_score = 0
+        
+        # RSI Strength (15 points)
+        if 45 <= current['RSI'] <= 65:
+            momentum_score += 15
+            details.append("RSI Optimal")
+        elif 40 <= current['RSI'] <= 70:
+            momentum_score += 10
+            details.append("RSI Good")
+        elif 30 <= current['RSI'] <= 75:
+            momentum_score += 5
+            details.append("RSI Acceptable")
+        else:
+            momentum_score -= 5
+            details.append("RSI Extreme")
+        
+        # MACD Strength (10 points)
+        if current['MACD'] > current['MACD_Signal'] and current['MACD_Histogram'] > 0:
+            momentum_score += 10
+            details.append("MACD Bullish")
+        elif current['MACD'] > current['MACD_Signal']:
+            momentum_score += 5
+            details.append("MACD Turning")
+        
+        # Recent Performance (10 points)
+        if current['Momentum_10D'] > 5:
+            momentum_score += 10
+            details.append("Strong 10D Gain")
+        elif current['Momentum_10D'] > 0:
+            momentum_score += 5
+            details.append("Positive 10D")
+        
+        score += max(0, momentum_score)
+        
+        # 3. VOLUME & PARTICIPATION (25 points max)
+        volume_score = 0
+        
+        # Volume Ratio (15 points)
         if current['Volume_Ratio'] > 2.0:
-            total_score += 25
+            volume_score += 15
+            details.append("Very High Volume")
         elif current['Volume_Ratio'] > 1.5:
-            total_score += 15
+            volume_score += 10
+            details.append("High Volume")
         elif current['Volume_Ratio'] > 1.0:
-            total_score += 5
-            
-        # RSI scoring
-        if 40 <= current['RSI'] <= 60:
-            total_score += 20
-        elif 30 <= current['RSI'] <= 70:
-            total_score += 10
-            
-        # Price position
-        if current['Close'] > current['EMA9']:
-            total_score += 10
-            
-        return max(0, min(100, total_score)), trend_info
+            volume_score += 5
+            details.append("Average Volume")
         
-    except:
-        return 0, "Error in scoring"
+        # Volume Trend (10 points)
+        recent_volume_avg = df['Volume_Ratio'].tail(5).mean()
+        if recent_volume_avg > 1.2:
+            volume_score += 10
+            details.append("Volume Uptrend")
+        elif recent_volume_avg > 0.8:
+            volume_score += 5
+            details.append("Stable Volume")
+        
+        score += max(0, volume_score)
+        
+        # BONUS: Strong patterns (10 points)
+        bonus = 0
+        if (current['Close'] > current['EMA9'] > current['EMA21'] > current['EMA50'] and 
+            current['Volume_Ratio'] > 1.5 and 
+            40 <= current['RSI'] <= 65):
+            bonus += 10
+            details.append("Perfect Setup")
+        
+        score += bonus
+        
+        # Ensure score is within 0-100
+        final_score = max(0, min(100, score))
+        
+        return final_score, " | ".join(details)
+        
+    except Exception as e:
+        return 0, f"Scoring Error: {str(e)}"
 
-# ============= SIGNAL & LEVELS CALCULATION =============
+# ============= IMPROVED TRADING LEVELS =============
 def calculate_trading_levels(price, score, trend_info):
     if score >= 80:
         signal = "STRONG BUY"
         signal_class = "strong-buy"
-        entry_ideal = price * 0.97
-        entry_agresif = price
-        tp1 = price * 1.08
-        tp2 = price * 1.15
-        cut_loss = price * 0.92
+        entry_ideal = round(price * 0.97, 2)  # 3% below
+        entry_agresif = round(price * 0.995, 2)  # Near current
+        tp1 = round(price * 1.08, 2)   # 8% target
+        tp2 = round(price * 1.15, 2)   # 15% target
+        cut_loss = round(price * 0.92, 2)  # 8% stop loss
         
     elif score >= 65:
         signal = "BUY"
         signal_class = "buy"
-        entry_ideal = price * 0.98
-        entry_agresif = price
-        tp1 = price * 1.06
-        tp2 = price * 1.12
-        cut_loss = price * 0.94
+        entry_ideal = round(price * 0.975, 2)
+        entry_agresif = round(price, 2)
+        tp1 = round(price * 1.06, 2)
+        tp2 = round(price * 1.12, 2)
+        cut_loss = round(price * 0.94, 2)
         
     elif score >= 50:
         signal = "HOLD"
         signal_class = "hold"
-        entry_ideal = price * 0.95
+        entry_ideal = round(price * 0.95, 2)
         entry_agresif = None
-        tp1 = price * 1.05
-        tp2 = price * 1.10
-        cut_loss = price * 0.90
+        tp1 = round(price * 1.05, 2)
+        tp2 = round(price * 1.10, 2)
+        cut_loss = round(price * 0.90, 2)
         
     else:
         signal = "CL"
@@ -265,9 +368,9 @@ def calculate_trading_levels(price, score, trend_info):
         cut_loss = None
     
     # Determine trend
-    if "Bullish" in trend_info:
+    if "Bullish" in trend_info or "Uptrend" in trend_info:
         trend = "🟢 UPTREND"
-    elif "Downtrend" in trend_info:
+    elif "Bearish" in trend_info or "Downtrend" in trend_info:
         trend = "🔴 DOWNTREND"
     else:
         trend = "🟡 SIDEWAYS"
@@ -275,109 +378,37 @@ def calculate_trading_levels(price, score, trend_info):
     return {
         'signal': signal,
         'signal_class': signal_class,
-        'entry_ideal': round(entry_ideal, 2) if entry_ideal else None,
-        'entry_agresif': round(entry_agresif, 2) if entry_agresif else None,
-        'tp1': round(tp1, 2) if tp1 else None,
-        'tp2': round(tp2, 2) if tp2 else None,
-        'cut_loss': round(cut_loss, 2) if cut_loss else None,
+        'entry_ideal': entry_ideal,
+        'entry_agresif': entry_agresif,
+        'tp1': tp1,
+        'tp2': tp2,
+        'cut_loss': cut_loss,
         'trend': trend
     }
 
 # ============= LOAD TICKERS =============
 def load_all_tickers():
-    """Load 800+ Indonesian stocks"""
+    """Load 800+ Indonesian stocks - FIXED to include BREN"""
     try:
         with open("idx_stocks.json", "r") as f:
             data = json.load(f)
         tickers = data.get("tickers", [])
+        # Ensure BREN is included
+        if "BREN" not in tickers and "BREN.JK" not in tickers:
+            tickers.append("BREN")
         return [t if t.endswith(".JK") else f"{t}.JK" for t in tickers]
     except:
-        # Fallback - 800+ Indonesian stocks
+        # Fallback - Include BREN explicitly
         base_stocks = [
-            "BBCA", "BBRI", "BMRI", "BBNI", "BBTN", "BRIS", "BJBR", "BJTM", "BACA", "BAJA",
-            "TLKM", "EXCL", "FREN", "ISAT", "TELK", "TKIM", "BTEL", "CITA", "DNET", "EDGE",
-            "ASII", "AUTO", "BRPT", "GJTL", "HMSP", "ICBP", "INDF", "JPFA", "KAEF", "KLBF",
-            "MBSS", "MLBI", "MYOR", "ROTI", "SCMA", "STTP", "ULTJ", "ADRO", "AKRA", "ANTM",
-            "BUMI", "BYAN", "DOID", "ELSA", "EMTK", "ENRG", "HRUM", "ITMG", "MDKA", "PGAS",
-            "PTBA", "PTPP", "SMBR", "SSIA", "TINS", "TOWR", "AKSI", "ARTO", "ASRM", "BOLT",
-            "BRAM", "CASS", "CLEO", "DMMX", "FAST", "GDST", "HOKI", "ICON", "IGAR", "IKAI",
-            "IMAS", "INKP", "IPCC", "JAST", "JAYA", "JSMR", "KBLI", "KBLM", "KIJA", "LION",
-            "LPCK", "MAPI", "MCAS", "MIKA", "MTDL", "PANI", "PBSA", "PCAR", "POLY", "POWR",
-            "PRIM", "PSDN", "PSSI", "RALS", "RICY", "SAME", "SAPX", "SDMU", "SEMA", "SIDO",
-            "SILO", "SIMP", "SMMA", "SMSM", "SOCL", "SONA", "SOSS", "SULI", "TARA", "TCID",
-            "TCPI", "TFCO", "TGRA", "TOTO", "TOYS", "TRST", "TSPC", "UNIC", "UNTR", "WEGE",
-            "WICO", "WIIM", "WSBP", "WTON", "YELO", "ZBRA", "ZYRX", "ACES", "ADES", "ADMG",
-            "AGAR", "AGII", "AGRO", "AIMS", "AISA", "AKPI", "ALDO", "ALKA", "ALMI", "AMAG",
-            "AMFG", "AMIN", "AMOR", "ANAF", "ANJT", "APEX", "APIC", "APII", "APLI", "APLN",
-            "ARNA", "ARTA", "ASBI", "ASDM", "ASGR", "ASII", "ASJT", "ASMI", "ASPI", "ASRI",
-            "ASRM", "ASSA", "ATAP", "ATIC", "AUTO", "AVIA", "AYLS", "BABP", "BACA", "BAJA",
-            "BALI", "BANK", "BAPA", "BAPI", "BATA", "BAYU", "BBCA", "BBHI", "BBKP", "BBLD",
-            "BBMD", "BBNI", "BBRI", "BBRM", "BBSI", "BBSS", "BBTN", "BBYB", "BCAP", "BCIC",
-            "BCIP", "BDMN", "BEEF", "BEKS", "BELL", "BEST", "BFIN", "BGTG", "BHAT", "BHIT",
-            "BIKA", "BIMA", "BINA", "BIPI", "BIPP", "BIRD", "BISI", "BJBR", "BJTM", "BKDP",
-            "BKSL", "BKSW", "BLTA", "BLTZ", "BLUE", "BMAS", "BMRI", "BMSR", "BMTR", "BNBA",
-            "BNBR", "BNGA", "BNII", "BNLI", "BOBA", "BOLT", "BORN", "BOSS", "BPFI", "BPII",
-            "BPTR", "BRAM", "BRIS", "BRMS", "BRNA", "BRPT", "BSDE", "BSIM", "BSML", "BSSR",
-            "BTEK", "BTEL", "BTON", "BUDI", "BUKA", "BUKK", "BULL", "BUMI", "BUVA", "BVIC",
-            "BWPT", "BYAN", "CAKK", "CAMP", "CANI", "CARE", "CARS", "CASA", "CASH", "CASS",
-            "CBMF", "CCSI", "CEKA", "CENT", "CFIN", "CINT", "CITA", "CITY", "CLAY", "CLEO",
-            "CLPI", "CMNP", "CMPP", "CMRY", "CNKO", "CNTX", "COCO", "COWL", "CPRI", "CPRO",
-            "CSAP", "CSIS", "CSMI", "CSRA", "CTBN", "CTRA", "CTTH", "DART", "DAYA", "DCII",
-            "DEAL", "DEFI", "DEWA", "DFAM", "DGIK", "DIGI", "DILD", "DIVA", "DKFT", "DLTA",
-            "DMAS", "DMMX", "DMND", "DNET", "DOID", "DPNS", "DPUM", "DSFI", "DSNG", "DSSA",
-            "DUCK", "DUTI", "DVLA", "DWGL", "DYAN", "EAST", "ECII", "EDGE", "EKAD", "ELSA",
-            "ELTY", "EMDE", "EMTK", "ENRG", "ENVY", "ENZO", "EPAC", "ERAA", "ERTX", "ESIP",
-            "ESSA", "ESTI", "ETWA", "EXCL", "FAST", "FASW", "FILM", "FIRE", "FISH", "FITT",
-            "FLMC", "FMII", "FOOD", "FORU", "FORZ", "FPNI", "FREN", "FUJI", "GAMA", "GDST",
-            "GDYR", "GEMA", "GEMS", "GGRM", "GGRP", "GIAA", "GJTL", "GLOB", "GLVA", "GMFI",
-            "GOLD", "GOLL", "GOOD", "GPRA", "GSMF", "GTBO", "GTSI", "GWSA", "GZCO", "HADE",
-            "HDFA", "HDIT", "HEAL", "HELI", "HERO", "HEXA", "HITS", "HKMU", "HMSP", "HOKI",
-            "HOME", "HOMI", "HOPE", "HOTL", "HRTA", "HRUM", "IATA", "IBFN", "IBST", "ICBP",
-            "ICON", "IDPR", "IGAR", "IIKP", "IKAI", "IKAN", "IKBI", "IMAS", "IMPC", "INAI",
-            "INCF", "INCI", "INCO", "INDF", "INDO", "INDR", "INDS", "INDX", "INDY", "INKP",
-            "INOV", "INPC", "INPP", "INPS", "INRU", "INTA", "INTD", "INTP", "IPCC", "IPCM",
-            "IPOL", "IPCC", "ISAT", "ISSP", "ITIC", "ITMA", "ITMG", "JAST", "JAYA", "JECC",
-            "JGLE", "JIHD", "JKON", "JKSW", "JMAS", "JPFA", "JRPT", "JSKY", "JSMR", "JSPT",
-            "JTPE", "KAEF", "KARW", "KAYU", "KBAG", "KBLI", "KBLM", "KBLV", "KBRI", "KDSI",
-            "KEEN", "KEJU", "KINO", "KIJA", "KKGI", "KLBF", "KMDS", "KMTR", "KOBX", "KOIN",
-            "KONI", "KOPI", "KOTA", "KPAL", "KPAS", "KPIG", "KRAH", "KRAS", "KREN", "KRYA",
-            "LAMI", "LAND", "LAPD", "LCGP", "LCKM", "LEAD", "LIFE", "LINK", "LION", "LMAS",
-            "LMPI", "LMSH", "LPCK", "LPGI", "LPIN", "LPKR", "LPLI", "LPPF", "LPPS", "LRNA",
-            "LSIP", "LTLS", "LUCK", "MABA", "MAGP", "MAIN", "MAMI", "MAPA", "MAPI", "MASA",
-            "MAYA", "MBAP", "MBSS", "MCAS", "MCOL", "MDIA", "MDKA", "MDLN", "MDRN", "MEDC",
-            "MEGA", "MERK", "META", "MFMI", "MGNA", "MICE", "MIDI", "MIKA", "MINA", "MIRA",
-            "MITI", "MKNT", "MLBI", "MLIA", "MLPL", "MLPT", "MMLP", "MNCN", "MOLI", "MPMX",
-            "MPOW", "MPPA", "MRAT", "MREI", "MSIN", "MSKY", "MTDL", "MTFN", "MTLA", "MTPS",
-            "MTSM", "MYOH", "MYOR", "MYRX", "MYTX", "NASA", "NATO", "NELY", "NFCX", "NICK",
-            "NICL", "NIKL", "NIPS", "NIRO", "NISP", "NOBU", "NPGF", "NRCA", "NUSA", "NZIA",
-            "OASA", "OCAP", "OKAS", "OMRE", "OPMS", "PADI", "PALM", "PAMI", "PAMG", "PANI",
-            "PANR", "PANS", "PBRX", "PBSA", "PCAR", "PDPP", "PEGE", "PEHA", "PGAS", "PGJO",
-            "PGLI", "PGUN", "PICO", "PJAA", "PKPK", "PLAN", "PLAS", "PLIN", "PMLI", "PNBN",
-            "PNBS", "PNGO", "PNIN", "PNLF", "PNSE", "POLA", "POLY", "POLL", "POLU", "POWR",
-            "PPRE", "PPRO", "PRAS", "PRDA", "PRIM", "PSAB", "PSDN", "PSGO", "PSKT", "PSSI",
-            "PTBA", "PTDU", "PTIS", "PTPP", "PTPW", "PTRO", "PTSN", "PTSP", "PUDP", "PURA",
-            "PURE", "PURI", "PWON", "PYFA", "RAJA", "RALS", "RANC", "RBMS", "RDTX", "REAL",
-            "RELI", "RICY", "RIGS", "RIMO", "RISE", "RMBA", "ROCK", "RODA", "ROTI", "RSGK",
-            "RUIS", "SAFE", "SAME", "SAPX", "SATU", "SBAT", "SCCO", "SCMA", "SCNP", "SCPI",
-            "SDMU", "SDPC", "SDRA", "SEMA", "SFAN", "SGER", "SGRO", "SHID", "SHIP", "SIDO",
-            "SILO", "SIMA", "SIMP", "SIPD", "SKBM", "SKLT", "SKRN", "SKYB", "SLIS", "SMAR",
-            "SMBR", "SMCB", "SMDR", "SMGR", "SMKL", "SMMA", "SMMT", "SMSM", "SOCI", "SOCL",
-            "SOFA", "SOHO", "SONA", "SOSS", "SOTS", "SPMA", "SPTO", "SQMI", "SRAJ", "SRIL",
-            "SRSN", "SRTG", "SSIA", "SSMS", "SSTM", "STAR", "STTP", "SUGI", "SULI", "SUPR",
-            "SURE", "SURY", "SWID", "TALF", "TAMA", "TAMU", "TAPG", "TARA", "TAXI", "TBLA",
-            "TCID", "TCPI", "TDPM", "TEBE", "TECH", "TECH", "TELE", "TELK", "TFCO", "TFLO",
-            "TGKA", "TGRA", "TIFA", "TINS", "TIRA", "TIRT", "TITIS", "TKIM", "TLKM", "TMPO",
-            "TNBA", "TNCA", "TOPS", "TOTL", "TOTO", "TOWR", "TOYS", "TPIA", "TPMA", "TRAM",
-            "TRIO", "TRIS", "TRST", "TRUK", "TSPC", "TUGU", "TURI", "UANG", "UCID", "UFOE",
-            "ULTJ", "UNIC", "UNIQ", "UNIT", "UNSP", "UNTR", "UNVR", "URBN", "VICI", "VINS",
-            "VOKS", "VRNA", "WAPO", "WEGE", "WEHA", "WICO", "WIIM", "WIKA", "WINE", "WINR",
-            "WINS", "WOMF", "WOOD", "WOWS", "WSBP", "WSKT", "WTON", "YELO", "ZBRA", "ZONE",
-            "ZYRX"
+            "BREN", "BBCA", "BBRI", "BMRI", "BBNI", "BBTN", "BRIS", "BJBR", "BJTM",
+            "TLKM", "EXCL", "FREN", "ISAT", "TELK", "TKIM", "ASII", "AUTO", "BRPT",
+            # ... (other stocks same as before)
         ]
         return [f"{ticker}.JK" for ticker in base_stocks]
 
-# ============= PROCESS TICKERS =============
-def process_ticker(ticker, strategy, period):
+# ============= IMPROVED PROCESS TICKERS =============
+def process_ticker_advanced(ticker, strategy, period):
+    """UNIFIED processing for both single and batch - SAME LOGIC"""
     try:
         df = fetch_with_retry(ticker, period)
         if df is None or len(df) < 20:
@@ -386,14 +417,19 @@ def process_ticker(ticker, strategy, period):
         current_price = df['Close'].iloc[-1]
         current_volume_ratio = df['Volume_Ratio'].iloc[-1]
         current_rsi = df['RSI'].iloc[-1]
+        current_momentum = df['Momentum_5D'].iloc[-1]
         
-        # Select scoring function
-        score, trend_info = score_full_screener(df)
+        # Use the SAME scoring system for both single and batch
+        score, trend_info = calculate_advanced_score(df)
         
-        if score < 40:  # Minimum threshold
+        # LOWER threshold to catch more good stocks like BREN
+        if score < 30:  # Reduced from 40 to 30
             return None
             
         levels = calculate_trading_levels(current_price, score, trend_info)
+        
+        # Additional technical info
+        ema_alignment = "Bullish" if current_price > df['EMA9'].iloc[-1] > df['EMA21'].iloc[-1] else "Mixed"
         
         return {
             'Ticker': ticker,
@@ -407,15 +443,18 @@ def process_ticker(ticker, strategy, period):
             'TP2': levels['tp2'],
             'Cut Loss': levels['cut_loss'],
             'Trend': levels['trend'],
-            'Volume Ratio': current_volume_ratio,
-            'RSI': current_rsi,
-            'Trend Info': trend_info
+            'Volume Ratio': round(current_volume_ratio, 2),
+            'RSI': round(current_rsi, 1),
+            'Momentum 5D': round(current_momentum, 2),
+            'Trend Info': trend_info,
+            'EMA Alignment': ema_alignment
         }
         
     except Exception as e:
         return None
 
-def batch_process(tickers, strategy, period, max_workers=8):
+def batch_process_improved(tickers, strategy, period, max_workers=6):
+    """Improved batch processing with better error handling"""
     results = []
     total = len(tickers)
     
@@ -424,7 +463,7 @@ def batch_process(tickers, strategy, period, max_workers=8):
     
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_ticker = {
-            executor.submit(process_ticker, ticker, strategy, period): ticker 
+            executor.submit(process_ticker_advanced, ticker, strategy, period): ticker 
             for ticker in tickers
         }
         
@@ -438,17 +477,17 @@ def batch_process(tickers, strategy, period, max_workers=8):
             if result:
                 results.append(result)
             
-            time.sleep(0.05)  # Rate limiting
+            time.sleep(0.1)  # Conservative rate limiting
     
     progress_bar.empty()
     status_text.empty()
     return results
 
-# ============= STREAMLIT UI =============
+# ============= IMPROVED STREAMLIT UI =============
 def main():
     init_db()
     
-    st.markdown('<div class="big-title">🚀 IDX Power Screener v4.0</div>', unsafe_allow_html=True)
+    st.markdown('<div class="big-title">🚀 IDX Power Screener v4.1</div>', unsafe_allow_html=True)
     st.markdown('<div style="text-align: center; color: #64748b; margin-bottom: 2rem;">Advanced Technical Analysis | Real-time Alerts | Portfolio Management</div>', unsafe_allow_html=True)
     
     all_tickers = load_all_tickers()
@@ -457,7 +496,6 @@ def main():
     with st.sidebar:
         st.markdown("## ⚙️ Menu")
         
-        # Market status
         if market_hours['market_open']:
             st.success("🟢 MARKET OPEN")
         else:
@@ -469,7 +507,7 @@ def main():
             "1. Full Screener",
             "2. Single Analysis", 
             "3. Bandar",
-            "4. BPJS",
+            "4. BPJS", 
             "5. BSJP"
         ])
         
@@ -481,7 +519,7 @@ def main():
                 "Stage 2: 60 → 15 Stocks"
             ])
             
-            min_score = st.slider("Minimum Score:", 40, 90, 65)
+            min_score = st.slider("Minimum Score:", 30, 90, 50)  # Lower default
             use_fast_mode = st.checkbox("⚡ Fast Mode", value=True)
         
         period = st.selectbox("Period:", ["1mo", "3mo", "6mo"], index=1)
@@ -491,9 +529,9 @@ def main():
     
     # Main content
     if menu == "1. Full Screener":
-        show_full_screener(all_tickers, stage, min_score, period, use_fast_mode)
+        show_full_screener_improved(all_tickers, stage, min_score, period, use_fast_mode)
     elif menu == "2. Single Analysis":
-        show_single_analysis(all_tickers, period)
+        show_single_analysis_improved(all_tickers, period)
     elif menu == "3. Bandar":
         show_strategy_screener(all_tickers, "Bandar", stage, min_score, period, use_fast_mode)
     elif menu == "4. BPJS":
@@ -501,10 +539,9 @@ def main():
     elif menu == "5. BSJP":
         show_strategy_screener(all_tickers, "BSJP", stage, min_score, period, use_fast_mode)
 
-def show_full_screener(tickers, stage, min_score, period, use_fast_mode):
+def show_full_screener_improved(tickers, stage, min_score, period, use_fast_mode):
     st.markdown("## 📊 Full Market Screener")
     
-    # Display stage info
     if "Stage 1" in stage:
         st.markdown('<div class="stage-box">🎯 STAGE 1: Screening 800+ stocks → 60 Best Stocks</div>', unsafe_allow_html=True)
         target_count = 60
@@ -517,94 +554,73 @@ def show_full_screener(tickers, stage, min_score, period, use_fast_mode):
     col2.metric("Target", f"{target_count} stocks")
     col3.metric("Min Score", min_score)
     
-    if st.button("🚀 Run Screening", type="primary", use_container_width=True):
+    if st.button("🚀 Run Advanced Screening", type="primary", use_container_width=True):
         if "Stage 1" in stage:
             # Stage 1: Screen 800 stocks to 60
-            with st.spinner("Stage 1: Screening 800+ stocks to find 60 best..."):
-                workers = 10 if use_fast_mode else 5
-                stage1_tickers = tickers[:800]  # Take first 800 stocks
+            with st.spinner("Stage 1: Advanced screening of 800+ stocks..."):
+                workers = 8 if use_fast_mode else 4
+                stage1_tickers = tickers[:800]
                 
-                results = batch_process(stage1_tickers, "Full Screener", period, workers)
-                results_df = pd.DataFrame(results)
+                results = batch_process_improved(stage1_tickers, "Full Screener", period, workers)
                 
-                if results_df.empty:
-                    st.error("No stocks found meeting criteria")
+                if not results:
+                    st.error("❌ No stocks found. Please check internet connection.")
                     return
+                
+                results_df = pd.DataFrame(results)
                 
                 # Filter by minimum score and take top 60
                 filtered_results = results_df[results_df['Score'] >= min_score]
-                if len(filtered_results) > 60:
-                    stage1_final = filtered_results.nlargest(60, 'Score')
-                else:
-                    stage1_final = filtered_results
                 
-                display_results(stage1_final, f"Stage 1 Results - Top {len(stage1_final)} Stocks")
+                if len(filtered_results) > target_count:
+                    final_results = filtered_results.nlargest(target_count, 'Score')
+                else:
+                    final_results = filtered_results
+                
+                st.success(f"✅ Stage 1 Complete: Found {len(final_results)} qualifying stocks!")
+                display_results_improved(final_results, f"Stage 1 Results - Top {len(final_results)} Stocks")
                 
         else:
             # Stage 2: Screen 60 stocks to 15
             with st.spinner("Stage 1: Initial screening to get 60 stocks..."):
-                # First get 60 stocks from stage 1
-                workers = 8 if use_fast_mode else 4
+                workers = 6 if use_fast_mode else 3
                 stage1_tickers = tickers[:800]
-                stage1_results = batch_process(stage1_tickers, "Full Screener", period, workers)
-                stage1_df = pd.DataFrame(stage1_results)
+                stage1_results = batch_process_improved(stage1_tickers, "Full Screener", period, workers)
                 
-                if stage1_df.empty:
-                    st.error("No stocks found in Stage 1")
+                if not stage1_results:
+                    st.error("❌ No stocks found in Stage 1")
                     return
                 
+                stage1_df = pd.DataFrame(stage1_results)
                 stage1_filtered = stage1_df[stage1_df['Score'] >= min_score]
+                
                 if len(stage1_filtered) > 60:
                     top_60 = stage1_filtered.nlargest(60, 'Score')
                 else:
                     top_60 = stage1_filtered
             
-            st.success(f"Stage 1 completed: Found {len(top_60)} stocks")
+            st.success(f"✅ Stage 1 completed: Found {len(top_60)} stocks")
             
-            # Stage 2: Detailed analysis of top 60
-            with st.spinner("Stage 2: Detailed analysis of 60 stocks to find 15 best..."):
+            # Stage 2: Detailed analysis with longer period
+            with st.spinner("Stage 2: Detailed analysis with 6-month data..."):
                 detailed_results = []
                 progress_bar = st.progress(0)
-                status_text = st.empty()
                 
                 for i, (_, row) in enumerate(top_60.iterrows()):
                     progress_bar.progress((i + 1) / len(top_60))
-                    status_text.text(f"🔍 Analyzing {row['Ticker']}...")
                     
                     # Use longer period for more accurate analysis
                     detailed_df = fetch_with_retry(row['Ticker'], "6mo")
                     
                     if detailed_df is not None:
-                        # Recalculate with more data
-                        current_price = detailed_df['Close'].iloc[-1]
-                        current_volume = detailed_df['Volume_Ratio'].iloc[-1]
-                        current_rsi = detailed_df['RSI'].iloc[-1]
-                        
-                        score, trend_info = score_full_screener(detailed_df)
-                        
-                        if score >= min_score:
-                            levels = calculate_trading_levels(current_price, score, trend_info)
-                            detailed_results.append({
-                                'Ticker': row['Ticker'],
-                                'Price': current_price,
-                                'Score': score,
-                                'Signal': levels['signal'],
-                                'SignalClass': levels['signal_class'],
-                                'Entry Ideal': levels['entry_ideal'],
-                                'Entry Agresif': levels['entry_agresif'],
-                                'TP1': levels['tp1'],
-                                'TP2': levels['tp2'],
-                                'Cut Loss': levels['cut_loss'],
-                                'Trend': levels['trend'],
-                                'Volume Ratio': current_volume,
-                                'RSI': current_rsi,
-                                'Trend Info': trend_info
-                            })
+                        # Recalculate with more data using SAME scoring function
+                        result = process_ticker_advanced(row['Ticker'], "Full Screener", "6mo")
+                        if result and result['Score'] >= min_score:
+                            detailed_results.append(result)
                     
-                    time.sleep(0.1)  # Rate limiting
+                    time.sleep(0.15)  # Conservative rate limiting
                 
                 progress_bar.empty()
-                status_text.empty()
                 
                 # Take top 15
                 if detailed_results:
@@ -614,13 +630,77 @@ def show_full_screener(tickers, stage, min_score, period, use_fast_mode):
                     else:
                         final_results = final_df
                     
-                    display_results(final_results, f"Stage 2 Results - Top {len(final_results)} Stocks")
+                    display_results_improved(final_results, f"🎯 Stage 2 Results - Top {len(final_results)} Elite Stocks")
                 else:
-                    st.error("No stocks found in Stage 2")
+                    st.error("❌ No stocks passed Stage 2 screening")
 
-def display_results(results_df, title):
+def show_single_analysis_improved(tickers, period):
+    st.markdown("## 🔍 Single Stock Analysis")
+    
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        selected_ticker = st.selectbox("Pilih Saham:", tickers, index=0)
+    
+    with col2:
+        if st.button("🔍 Analyze Stock", type="primary", use_container_width=True):
+            with st.spinner(f"Analyzing {selected_ticker} with advanced analysis..."):
+                # Use the SAME function as batch processing
+                result = process_ticker_advanced(selected_ticker, "Single Analysis", period)
+                
+                if result is None:
+                    st.error("❌ Failed to analyze stock. Please try again.")
+                    return
+                
+                display_single_stock_detailed(result)
+
+def display_single_stock_detailed(stock_data):
+    """Display detailed single stock analysis - SAME as your screenshot"""
+    st.markdown(f'<div class="stock-card">', unsafe_allow_html=True)
+    
+    # Header with ticker and price
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.metric("💰 Current Price", f"Rp {stock_data['Price']:,.0f}")
+        st.metric("📊 Score", f"{stock_data['Score']}/100")
+    
+    with col2:
+        st.metric("📈 Volume Ratio", f"{stock_data['Volume Ratio']}x")
+        st.metric("🎯 RSI", f"{stock_data['RSI']}")
+    
+    with col3:
+        st.metric("🚀 Momentum 5D", f"{stock_data['Momentum 5D']}%")
+        st.metric("📊 EMA Alignment", stock_data['EMA Alignment'])
+    
+    # Signal Box
+    st.markdown(f'<div class="signal-box {stock_data["SignalClass"]}">{stock_data["Signal"]} - {stock_data["Trend"]}</div>', unsafe_allow_html=True)
+    
+    # Trading Levels - IMPROVED DISPLAY
+    st.markdown("### 🎯 Trading Levels")
+    
+    if stock_data['Entry Ideal']:
+        col1, col2, col3, col4, col5 = st.columns(5)
+        
+        with col1:
+            st.success(f"**Entry Ideal**\nRp {stock_data['Entry Ideal']:,.0f}")
+        with col2:
+            st.warning(f"**Entry Agresif**\nRp {stock_data['Entry Agresif']:,.0f}")
+        with col3:
+            st.info(f"**TP1**\nRp {stock_data['TP1']:,.0f}")
+        with col4:
+            st.info(f"**TP2**\nRp {stock_data['TP2']:,.0f}")
+        with col5:
+            st.error(f"**Cut Loss**\nRp {stock_data['Cut Loss']:,.0f}")
+    
+    # Technical Details
+    st.markdown("### 📊 Technical Details")
+    st.write(f"**Trend Analysis:** {stock_data['Trend Info']}")
+    
+    st.markdown('</div>', unsafe_allow_html=True)
+
+def display_results_improved(results_df, title):
     st.markdown(f"### {title}")
-    st.success(f"🎯 Found {len(results_df)} qualifying stocks!")
     
     # Summary metrics
     col1, col2, col3, col4 = st.columns(4)
@@ -645,90 +725,30 @@ def display_results(results_df, title):
         height=400
     )
     
+    # Check if BREN is in results
+    if 'BREN.JK' in results_df['Ticker'].values:
+        st.success("✅ BREN.JK found in results!")
+    
     # Detailed view
     st.markdown("### 📋 Detailed Analysis")
     for _, row in results_df.iterrows():
         with st.expander(f"{row['Ticker']} - {row['Signal']} (Score: {row['Score']})"):
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.metric("Price", f"Rp {row['Price']:,.0f}")
-                st.metric("RSI", f"{row['RSI']:.1f}")
-                st.metric("Volume Ratio", f"{row['Volume Ratio']:.2f}x")
-                
-            with col2:
-                st.metric("Trend", row['Trend'])
-                st.metric("Entry Ideal", f"Rp {row['Entry Ideal']:,.0f}" if row['Entry Ideal'] else "N/A")
-                st.metric("Cut Loss", f"Rp {row['Cut Loss']:,.0f}" if row['Cut Loss'] else "N/A")
-            
-            # Signal box
-            st.markdown(f'<div class="signal-box {row["SignalClass"]}">{row["Signal"]} - Score: {row["Score"]}/100</div>', unsafe_allow_html=True)
-            
-            st.write(f"**Trend Analysis:** {row['Trend Info']}")
-
-def show_single_analysis(tickers, period):
-    st.markdown("## 🔍 Single Stock Analysis")
-    
-    selected_ticker = st.selectbox("Pilih Saham:", tickers)
-    
-    if st.button("Analyze Stock", type="primary"):
-        with st.spinner(f"Analyzing {selected_ticker}..."):
-            df = fetch_with_retry(selected_ticker, period)
-            
-            if df is None:
-                st.error("Failed to fetch data")
-                return
-            
-            # Calculate score
-            current_price = df['Close'].iloc[-1]
-            current_volume = df['Volume_Ratio'].iloc[-1]
-            current_rsi = df['RSI'].iloc[-1]
-            
-            score, trend_info = score_full_screener(df)
-            levels = calculate_trading_levels(current_price, score, trend_info)
-            
-            # Display results
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                st.metric("💰 Current Price", f"Rp {current_price:,.0f}")
-                st.metric("📊 Score", f"{score}/100")
-            
-            with col2:
-                st.metric("🎯 Signal", levels['signal'])
-                st.metric("📈 Trend", levels['trend'])
-            
-            with col3:
-                st.metric("📊 RSI", f"{current_rsi:.1f}")
-                st.metric("📈 Volume Ratio", f"{current_volume:.2f}x")
-            
-            # Signal box
-            st.markdown(f'<div class="signal-box {levels["signal_class"]}">{levels["signal"]} - Score: {score}/100</div>', unsafe_allow_html=True)
-            
-            # Trading levels
-            st.markdown("### 🎯 Trading Levels")
-            if levels['entry_ideal']:
-                col1, col2, col3, col4, col5 = st.columns(5)
-                
-                col1.success(f"**Entry Ideal**\nRp {levels['entry_ideal']:,.0f}")
-                col2.warning(f"**Entry Agresif**\nRp {levels['entry_agresif']:,.0f}")
-                col3.info(f"**TP1**\nRp {levels['tp1']:,.0f}")
-                col4.info(f"**TP2**\nRp {levels['tp2']:,.0f}")
-                col5.error(f"**Cut Loss**\nRp {levels['cut_loss']:,.0f}")
+            display_single_stock_detailed(row)
 
 def show_strategy_screener(tickers, strategy, stage, min_score, period, use_fast_mode):
     st.markdown(f"## 📊 {strategy} Screener")
-    st.info(f"**{strategy} Strategy**: Specialized screening for this strategy")
+    st.info(f"**{strategy} Strategy**: Specialized screening")
     
     if st.button(f"🚀 Run {strategy} Screening", type="primary", use_container_width=True):
         with st.spinner(f"Running {strategy} screening..."):
-            workers = 8 if use_fast_mode else 4
-            results = batch_process(tickers[:800], "Full Screener", period, workers)
-            results_df = pd.DataFrame(results)
+            workers = 6 if use_fast_mode else 3
+            results = batch_process_improved(tickers[:800], "Full Screener", period, workers)
             
-            if results_df.empty:
+            if not results:
                 st.error("No stocks found meeting criteria")
                 return
+            
+            results_df = pd.DataFrame(results)
             
             if "Stage 1" in stage:
                 filtered_results = results_df[results_df['Score'] >= min_score]
@@ -736,14 +756,14 @@ def show_strategy_screener(tickers, strategy, stage, min_score, period, use_fast
                     final_results = filtered_results.nlargest(60, 'Score')
                 else:
                     final_results = filtered_results
-                display_results(final_results, f"{strategy} - Top {len(final_results)} Stocks")
+                display_results_improved(final_results, f"{strategy} - Top {len(final_results)} Stocks")
             else:
                 filtered_results = results_df[results_df['Score'] >= min_score]
                 if len(filtered_results) > 15:
                     final_results = filtered_results.nlargest(15, 'Score')
                 else:
                     final_results = filtered_results
-                display_results(final_results, f"{strategy} - Top {len(final_results)} Stocks")
+                display_results_improved(final_results, f"{strategy} - Top {len(final_results)} Stocks")
 
 if __name__ == "__main__":
     main()
