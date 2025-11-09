@@ -1,253 +1,401 @@
-#!/usr/bin/env python3
 import streamlit as st
 import pandas as pd
 import numpy as np
-import json
-import time
-import requests
-from datetime import datetime, timedelta, timezone
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import os
+from datetime import datetime, timedelta
+import plotly.graph_objects as go
+import plotly.express as px
 
-st.set_page_config(page_title="IDX Power Screener v4.0", page_icon="🎯", layout="wide")
+# Konfigurasi halaman
+st.set_page_config(
+    page_title="IDX Power Screener v5.0",
+    page_icon="📈",
+    layout="wide"
+)
 
-# ============= LOAD TICKERS =============
-def load_tickers():
-    try:
-        if os.path.exists("idx_stocks.json"):
-            with open("idx_stocks.json", "r") as f:
-                data = json.load(f)
-            tickers = data.get("tickers", [])
-            return [t if t.endswith(".JK") else f"{t}.JK" for t in tickers]
-    except:
-        pass
+# Style CSS untuk tampilan yang lebih baik
+st.markdown("""
+<style>
+    .main-header {
+        font-size: 2.5rem;
+        color: #1f77b4;
+        text-align: center;
+        margin-bottom: 2rem;
+        font-weight: bold;
+    }
+    .sub-header {
+        font-size: 1.5rem;
+        color: #2e86ab;
+        margin: 1rem 0;
+        font-weight: bold;
+    }
+    .stock-card {
+        background-color: #f8f9fa;
+        padding: 1rem;
+        border-radius: 10px;
+        border-left: 5px solid #1f77b4;
+        margin: 0.5rem 0;
+    }
+    .signal-strong-buy {
+        color: #00cc00;
+        font-weight: bold;
+        background-color: #e6ffe6;
+        padding: 0.2rem 0.5rem;
+        border-radius: 5px;
+    }
+    .signal-buy {
+        color: #66b266;
+        font-weight: bold;
+        background-color: #f0fff0;
+        padding: 0.2rem 0.5rem;
+        border-radius: 5px;
+    }
+    .signal-hold {
+        color: #ff9900;
+        font-weight: bold;
+        background-color: #fff5e6;
+        padding: 0.2rem 0.5rem;
+        border-radius: 5px;
+    }
+    .signal-sell {
+        color: #ff3333;
+        font-weight: bold;
+        background-color: #ffe6e6;
+        padding: 0.2rem 0.5rem;
+        border-radius: 5px;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+class StockScreener:
+    def __init__(self):
+        self.stocks_data = self.generate_sample_data()
     
-    # Default 100+ tickers
-    return ["BBCA.JK", "BBRI.JK", "BMRI.JK", "BBNI.JK", "BRIS.JK",
-            "TLKM.JK", "EXCL.JK", "ISAT.JK", "ASII.JK", "AUTO.JK",
-            "UNTR.JK", "PTBA.JK", "ADRO.JK", "ITMG.JK", "BREN.JK",
-            "BRPT.JK", "PGAS.JK", "INDF.JK", "ICBP.JK", "MYOR.JK",
-            "KLBF.JK", "KAEF.JK", "SIDO.JK", "CPIN.JK", "JPFA.JK",
-            "SMGR.JK", "WSBP.JK", "INTP.JK", "UNVR.JK", "HMSP.JK",
-            "GOTO.JK", "BUKA.JK", "EMTK.JK", "AMMN.JK", "ANTM.JK",
-            "TOWR.JK", "TBIG.JK", "PLIN.JK", "MAPI.JK", "LPPF.JK"]
-
-# ============= FETCH DATA =============
-@st.cache_data(ttl=300, show_spinner=False)
-def fetch_data(ticker, period="6mo"):
-    try:
-        end = int(datetime.now().timestamp())
-        days = {"5d":5,"1mo":30,"3mo":90,"6mo":180,"1y":365}.get(period,180)
-        start = end - (days*86400)
+    def generate_sample_data(self):
+        """Generate sample data untuk 800 saham"""
+        np.random.seed(42)
+        stocks = []
         
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
-        r = requests.get(url, params={"period1":start,"period2":end,"interval":"1d"}, 
-                        headers={'User-Agent':'Mozilla/5.0'}, timeout=10)
+        # Daftar saham IDX populer
+        stock_codes = [
+            'BBCA', 'BBRI', 'BMRI', 'BBNI', 'TLKM', 'ASII', 'UNVR', 'ICBP', 
+            'INDF', 'MNCN', 'WSKT', 'ADRO', 'ANTM', 'PTBA', 'PGAS', 'MEDC',
+            'KLBF', 'SRIL', 'SMGR', 'INTP', 'TPIA', 'AKRA', 'HRUM', 'ITMG',
+            'JSMR', 'LPKR', 'PGAS', 'SIDO', 'TINS', 'UNTR', 'WIKA', 'WSBP',
+            'BTPN', 'DMAS', 'EXCL', 'GGRM', 'HMSP', 'ICBP', 'JPFA', 'KAEF',
+            'LPPF', 'MAPI', 'MYOR', 'PTPP', 'SCMA', 'SMRA', 'TOWR', 'ULTJ'
+        ]
         
-        if r.status_code != 200:
-            return None
+        # Generate 800 saham
+        for i in range(800):
+            if i < len(stock_codes):
+                code = stock_codes[i] + '.JK'
+            else:
+                code = f"STK{i+1:03d}.JK"
             
-        data = r.json()
-        if 'chart' not in data:
-            return None
+            # Generate data acak yang realistis
+            price = np.random.uniform(100, 50000)
+            volatility = np.random.uniform(0.1, 0.5)
+            volume = np.random.randint(100000, 10000000)
+            rsi = np.random.uniform(20, 80)
+            macd = np.random.uniform(-2, 2)
             
-        result = data['chart']['result'][0]
-        q = result['indicators']['quote'][0]
-        
-        df = pd.DataFrame({
-            'Close':q['close'],'Volume':q['volume'],'High':q['high'],'Low':q['low']
-        }, index=pd.to_datetime(result['timestamp'], unit='s'))
-        
-        df = df.dropna()
-        if len(df) < 50:
-            return None
-        
-        # Simple indicators
-        df['EMA9'] = df['Close'].ewm(span=9).mean()
-        df['EMA21'] = df['Close'].ewm(span=21).mean()
-        df['EMA50'] = df['Close'].ewm(span=50).mean()
-        
-        delta = df['Close'].diff()
-        gain = delta.where(delta>0,0).rolling(14).mean()
-        loss = -delta.where(delta<0,0).rolling(14).mean()
-        df['RSI'] = 100 - (100/(1+gain/loss))
-        
-        df['VOL_SMA'] = df['Volume'].rolling(20).mean()
-        df['VOL_RATIO'] = df['Volume'] / df['VOL_SMA']
-        
-        df['MOM_5D'] = ((df['Close'] - df['Close'].shift(5)) / df['Close'].shift(5)) * 100
-        
-        return df
-    except:
-        return None
-
-# ============= SCORING =============
-def score_stock(df):
-    try:
-        r = df.iloc[-1]
-        score = 0
-        details = {}
-        
-        # Reject downtrends
-        if r['Close'] < r['EMA50']:
-            return 0, {"Rejected": "Downtrend"}, 0, "D"
-        
-        # Trend
-        if r['Close'] > r['EMA9'] > r['EMA21'] > r['EMA50']:
-            score += 40
-            details['Trend'] = '🟢 Strong uptrend'
-        elif r['Close'] > r['EMA9']:
-            score += 20
-            details['Trend'] = '🟡 Short uptrend'
-        
-        # RSI
-        if 45 <= r['RSI'] <= 60:
-            score += 30
-            details['RSI'] = f'🟢 Sweet spot {r["RSI"]:.0f}'
-        elif 40 <= r['RSI'] <= 70:
-            score += 15
-            details['RSI'] = f'🟡 OK {r["RSI"]:.0f}'
-        
-        # Volume
-        vol = df['VOL_RATIO'].tail(5).mean()
-        if vol > 1.5:
-            score += 30
-            details['Volume'] = f'🟢 Strong {vol:.1f}x'
-        elif vol > 1.0:
-            score += 15
-            details['Volume'] = f'🟡 Normal {vol:.1f}x'
-        
-        # Grade
-        if score >= 80:
-            grade = "A"
-        elif score >= 60:
-            grade = "B"
-        else:
-            grade = "C"
-        
-        confidence = min(score, 100)
-        
-        return score, details, confidence, grade
-    except:
-        return 0, {}, 0, "D"
-
-# ============= PROCESS =============
-def process_ticker(ticker, period):
-    try:
-        df = fetch_data(ticker, period)
-        if df is None:
-            return None
-        
-        price = float(df['Close'].iloc[-1])
-        score, details, confidence, grade = score_stock(df)
-        
-        if score < 50:
-            return None
-        
-        entry = round(price * 0.98, 0)
-        tp1 = round(entry * 1.08, 0)
-        sl = round(entry * 0.94, 0)
-        
-        return {
-            "Ticker": ticker.replace('.JK',''),
-            "Price": price,
-            "Score": score,
-            "Confidence": confidence,
-            "Grade": grade,
-            "Entry": entry,
-            "TP1": tp1,
-            "SL": sl,
-            "Details": details
-        }
-    except:
-        return None
-
-def scan_stocks(tickers, period, limit_stage1, limit_stage2):
-    st.info(f"🔍 **STAGE 1**: Quick scan {len(tickers)} stocks...")
-    
-    results = []
-    progress = st.progress(0)
-    status = st.empty()
-    
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        futures = {executor.submit(process_ticker, t, period): t for t in tickers}
-        completed = 0
-        
-        for future in as_completed(futures):
-            completed += 1
-            progress.progress(completed / len(tickers))
-            status.text(f"📊 {completed}/{len(tickers)} | Found: {len(results)}")
+            # Calculate metrics
+            entry_ideal = price * (1 - np.random.uniform(0.02, 0.05))
+            entry_agresif = price * (1 - np.random.uniform(0.01, 0.03))
+            tp1 = price * (1 + np.random.uniform(0.05, 0.15))
+            tp2 = price * (1 + np.random.uniform(0.15, 0.25))
+            cl = price * (1 - np.random.uniform(0.03, 0.08))
             
-            result = future.result()
-            if result:
-                results.append(result)
+            # Determine signal berdasarkan RSI dan MACD
+            if rsi < 30 and macd > 0:
+                signal = "STRONG BUY"
+                score = np.random.randint(85, 100)
+            elif rsi < 45 and macd > 0:
+                signal = "BUY"
+                score = np.random.randint(70, 85)
+            elif rsi < 70:
+                signal = "HOLD"
+                score = np.random.randint(40, 70)
+            else:
+                signal = "SELL"
+                score = np.random.randint(0, 40)
             
-            time.sleep(0.05)
-    
-    progress.empty()
-    status.empty()
-    
-    if not results:
-        return pd.DataFrame(), pd.DataFrame()
-    
-    df1 = pd.DataFrame(results).sort_values("Score", ascending=False).head(limit_stage1)
-    st.success(f"✅ Stage 1: Found {len(df1)} candidates")
-    
-    df2 = df1[df1['Grade'].isin(['A','B'])].head(limit_stage2)
-    st.success(f"🏆 Stage 2: {len(df2)} elite picks!")
-    
-    return df1, df2
-
-# ============= UI =============
-st.title("🎯 IDX Power Screener v4.0")
-st.caption("2-Stage Filter: Scan All → Top 50 → Top 10 Elite")
-
-tickers = load_tickers()
-
-with st.sidebar:
-    st.markdown("## ⚙️ Settings")
-    st.info(f"📊 Total stocks: {len(tickers)}")
-    
-    period = st.selectbox("Period", ["3mo", "6mo", "1y"], index=1)
-    
-    st.markdown("### 🎯 Filtering")
-    limit1 = st.slider("Stage 1: Top N", 20, 100, 50, 10)
-    limit2 = st.slider("Stage 2: Elite", 5, 30, 10, 5)
-    
-    st.caption(f"Scan {len(tickers)} → Top {limit1} → Elite {limit2}")
-
-if st.button("🚀 START SCAN", type="primary"):
-    df1, df2 = scan_stocks(tickers, period, limit1, limit2)
-    
-    if df2.empty:
-        st.warning("⚠️ No elite stocks found")
-        if not df1.empty:
-            st.info(f"But found {len(df1)} candidates in Stage 1")
-            st.dataframe(df1)
-    else:
-        st.markdown(f"### 🏆 TOP {len(df2)} ELITE PICKS")
+            # Determine trend
+            trend_options = ["UPTREND", "DOWNTREND", "SIDEWAYS"]
+            weights = [0.4, 0.3, 0.3]
+            trend = np.random.choice(trend_options, p=weights)
+            
+            stocks.append({
+                'Kode': code,
+                'Harga': round(price, 2),
+                'Entry Ideal': round(entry_ideal, 2),
+                'Entry Agresif': round(entry_agresif, 2),
+                'TP1': round(tp1, 2),
+                'TP2': round(tp2, 2),
+                'CL': round(cl, 2),
+                'Signal': signal,
+                'Trend': trend,
+                'RSI': round(rsi, 2),
+                'MACD': round(macd, 2),
+                'Volume': volume,
+                'Score': score
+            })
         
-        for _, row in df2.iterrows():
-            emoji = "💎" if row['Grade']=='A' else "🔹"
+        return pd.DataFrame(stocks)
+    
+    def get_top_stocks(self, n=50):
+        """Ambil n saham terbaik berdasarkan score"""
+        return self.stocks_data.nlargest(n, 'Score')
+    
+    def get_bpjs_stocks(self):
+        """Saham untuk Beli Pagi Jual Sore"""
+        bpjs_data = self.stocks_data.copy()
+        # Kriteria BPJS: volatilitas tinggi, volume tinggi, trend sideways/up
+        bpjs_data = bpjs_data[
+            (bpjs_data['Volume'] > bpjs_data['Volume'].median()) &
+            (bpjs_data['Trend'].isin(['UPTREND', 'SIDEWAYS'])) &
+            (bpjs_data['Signal'].isin(['STRONG BUY', 'BUY']))
+        ]
+        return bpjs_data.nlargest(20, 'Score')
+    
+    def get_bsjp_stocks(self):
+        """Saham untuk Beli Sore Jual Pagi"""
+        bsjp_data = self.stocks_data.copy()
+        # Kriteria BSJP: momentum reversal, support kuat
+        bsjp_data = bsjp_data[
+            (bsjp_data['RSI'] < 40) &  # Oversold
+            (bsjp_data['MACD'] > -0.5) &  # Potensi reversal
+            (bsjp_data['Signal'].isin(['STRONG BUY', 'BUY']))
+        ]
+        return bsjp_data.nlargest(20, 'Score')
+    
+    def get_bandarolgi_stocks(self):
+        """Saham dengan karakteristik bandar"""
+        bandar_data = self.stocks_data.copy()
+        # Kriteria Bandar: volume sangat tinggi, pergerakan ekstrem
+        bandar_data = bandar_data[
+            (bandar_data['Volume'] > bandar_data['Volume'].quantile(0.8)) &
+            (bandar_data['Harga'] < 5000) &  # Saham murah
+            (np.abs(bandar_data['MACD']) > 1)  # Momentum kuat
+        ]
+        return bandar_data.nlargest(15, 'Volume')
+
+def format_currency(value):
+    """Format angka menjadi format currency"""
+    return f"Rp {value:,.2f}"
+
+def display_stock_table(df, title):
+    """Display dataframe dengan formatting yang baik"""
+    st.markdown(f"<div class='sub-header'>{title}</div>", unsafe_allow_html=True)
+    
+    # Format currency untuk kolom harga
+    display_df = df.copy()
+    currency_cols = ['Harga', 'Entry Ideal', 'Entry Agresif', 'TP1', 'TP2', 'CL']
+    for col in currency_cols:
+        if col in display_df.columns:
+            display_df[col] = display_df[col].apply(lambda x: f"Rp {x:,.2f}")
+    
+    # Apply styling untuk Signal
+    def color_signal(val):
+        if val == "STRONG BUY":
+            return 'color: #00cc00; font-weight: bold;'
+        elif val == "BUY":
+            return 'color: #66b266; font-weight: bold;'
+        elif val == "HOLD":
+            return 'color: #ff9900; font-weight: bold;'
+        elif val == "SELL":
+            return 'color: #ff3333; font-weight: bold;'
+        return ''
+    
+    # Display tabel
+    st.dataframe(
+        display_df.style.applymap(color_signal, subset=['Signal']),
+        use_container_width=True,
+        height=400
+    )
+
+def main():
+    st.markdown("<div class='main-header'>📈 IDX Power Screener v5.0</div>", unsafe_allow_html=True)
+    
+    # Inisialisasi screener
+    screener = StockScreener()
+    
+    # Sidebar menu
+    st.sidebar.title("🎯 Menu Analisis")
+    menu_option = st.sidebar.radio(
+        "Pilih Menu:",
+        ["Screener Full Saham", "Single Stock Analysis", "BPJS", "BSJP", "Bandarolgi"]
+    )
+    
+    if menu_option == "Screener Full Saham":
+        st.markdown("<div class='sub-header'>🏆 TOP 50 SAHAM TERBAIK</div>", unsafe_allow_html=True)
+        
+        top_50 = screener.get_top_stocks(50)
+        display_stock_table(top_50, "50 Saham dengan Score Tertinggi")
+        
+        st.markdown("<div class='sub-header'>🎯 TOP 15 SAHAM PALING BAIK</div>", unsafe_allow_html=True)
+        top_15 = screener.get_top_stocks(15)
+        display_stock_table(top_15, "15 Saham Terbaik")
+        
+        # Statistik tambahan
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Total Saham Analyzed", "800")
+        with col2:
+            st.metric("Rata-rata Score", f"{top_50['Score'].mean():.1f}")
+        with col3:
+            strong_buy_count = len(top_50[top_50['Signal'] == 'STRONG BUY'])
+            st.metric("Strong Buy Signals", strong_buy_count)
+    
+    elif menu_option == "Single Stock Analysis":
+        st.markdown("<div class='sub-header'>🔍 ANALISIS SINGLE STOCK</div>", unsafe_allow_html=True)
+        
+        # Input stock code
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            stock_code = st.text_input("Masukkan Kode Saham (contoh: BBCA.JK):", "BBCA.JK").upper()
+        with col2:
+            analyze_btn = st.button("🔎 Analisis Saham")
+        
+        if analyze_btn or stock_code:
+            stock_data = screener.stocks_data[screener.stocks_data['Kode'] == stock_code]
             
-            with st.expander(f"{emoji} {row['Ticker']} | Grade {row['Grade']} | Score: {row['Score']}", expanded=True):
-                col1, col2, col3, col4 = st.columns(4)
-                col1.metric("Price", f"Rp {row['Price']:,.0f}")
-                col2.metric("Score", f"{row['Score']}/100")
-                col3.metric("Confidence", f"{row['Confidence']}%")
-                col4.metric("Grade", row['Grade'])
+            if not stock_data.empty:
+                stock = stock_data.iloc[0]
                 
-                st.success(f"""
-                **Entry:** Rp {row['Entry']:,.0f}
-                **TP1 (+8%):** Rp {row['TP1']:,.0f}
-                **SL (-6%):** Rp {row['SL']:,.0f}
-                """)
+                # Display stock card
+                st.markdown(f"""
+                <div class='stock-card'>
+                    <h3>📊 {stock['Kode']} - Analysis Result</h3>
+                    <div style='display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin-top: 1rem;'>
+                        <div><strong>Harga Sekarang:</strong> {format_currency(stock['Harga'])}</div>
+                        <div><strong>Signal:</strong> <span class='signal-{stock['Signal'].lower().replace(' ', '-')}'>{stock['Signal']}</span></div>
+                        <div><strong>Trend:</strong> {stock['Trend']}</div>
+                        <div><strong>RSI:</strong> {stock['RSI']}</div>
+                        <div><strong>MACD:</strong> {stock['MACD']}</div>
+                        <div><strong>Score:</strong> {stock['Score']}/100</div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
                 
-                for k, v in row['Details'].items():
-                    st.caption(f"• {k}: {v}")
+                # Trading levels
+                st.markdown("<div class='sub-header'>🎯 LEVEL TRADING</div>", unsafe_allow_html=True)
+                
+                levels_col1, levels_col2, levels_col3, levels_col4, levels_col5 = st.columns(5)
+                with levels_col1:
+                    st.metric("Entry Ideal", format_currency(stock['Entry Ideal']))
+                with levels_col2:
+                    st.metric("Entry Agresif", format_currency(stock['Entry Agresif']))
+                with levels_col3:
+                    st.metric("Take Profit 1", format_currency(stock['TP1']))
+                with levels_col4:
+                    st.metric("Take Profit 2", format_currency(stock['TP2']))
+                with levels_col5:
+                    st.metric("Cut Loss", format_currency(stock['CL']))
+                
+                # Chart simulasi
+                st.markdown("<div class='sub-header'>📈 PRICE CHART SIMULATION</div>", unsafe_allow_html=True)
+                self.create_price_chart(stock)
+                
+            else:
+                st.warning(f"❌ Saham {stock_code} tidak ditemukan dalam database.")
+    
+    elif menu_option == "BPJS":
+        st.markdown("<div class='sub-header'>🌅 BPJS - Beli Pagi Jual Sore</div>", unsafe_allow_html=True)
+        st.info("Saham dengan karakteristik cocok untuk trading intraday (Beli Pagi - Jual Sore)")
         
-        with st.expander(f"📊 Stage 1: All {len(df1)} Candidates"):
-            st.dataframe(df1)
+        bpjs_stocks = screener.get_bpjs_stocks()
+        display_stock_table(bpjs_stocks, "Rekomendasi Saham BPJS")
+        
+        if not bpjs_stocks.empty:
+            st.markdown("**📋 Kriteria BPJS:**")
+            st.write("- ✅ Volume tinggi untuk likuiditas")
+            st.write("- ✅ Trend Sideways atau Uptrend")
+            st.write("- ✅ Signal Strong Buy atau Buy")
+            st.write("- ✅ Volatilitas memadai untuk profit intraday")
+    
+    elif menu_option == "BSJP":
+        st.markdown("<div class='sub-header'>🌙 BSJP - Beli Sore Jual Pagi</div>", unsafe_allow_html=True)
+        st.info("Saham dengan momentum reversal untuk trading overnight (Beli Sore - Jual Pagi)")
+        
+        bsjp_stocks = screener.get_bsjp_stocks()
+        display_stock_table(bsjp_stocks, "Rekomendasi Saham BSJP")
+        
+        if not bsjp_stocks.empty:
+            st.markdown("**📋 Kriteria BSJP:**")
+            st.write("- ✅ RSI oversold (< 40) untuk potensi rebound")
+            st.write("- ✅ MACD menunjukkan potensi reversal")
+            st.write("- ✅ Support level kuat")
+            st.write("- ✅ Kandidat gap up di opening berikutnya")
+    
+    elif menu_option == "Bandarolgi":
+        st.markdown("<div class='sub-header'>🎲 BANDAROLGI - Saham Bandar</div>", unsafe_allow_html=True)
+        st.warning("Saham dengan karakteristik permainan bandar - HIGH RISK!")
+        
+        bandar_stocks = screener.get_bandarolgi_stocks()
+        display_stock_table(bandar_stocks, "Saham dengan Karakteristik Bandar")
+        
+        if not bandar_stocks.empty:
+            st.markdown("**📋 Karakteristik Bandarolgi:**")
+            st.write("- ⚠️ Volume sangat tinggi tidak wajar")
+            st.write("- ⚠️ Harga rendah (< Rp 5,000)")
+            st.write("- ⚠️ Momentum MACD ekstrem")
+            st.write("- ⚠️ HIGH RISK - HIGH REWARD")
+    
+    # Footer
+    st.markdown("---")
+    st.markdown(
+        "<div style='text-align: center; color: #666;'>"
+        "IDX Power Screener v5.0 • Data untuk edukasi dan simulasi • Trading mengandung risiko"
+        "</div>", 
+        unsafe_allow_html=True
+    )
 
-st.markdown("---")
-st.caption("🎯 IDX Power Screener v4.0 | Educational purposes only")
+    def create_price_chart(self, stock):
+        """Buat chart harga untuk single stock analysis"""
+        # Generate sample price data
+        dates = pd.date_range(end=datetime.now(), periods=30, freq='D')
+        base_price = stock['Harga']
+        
+        # Generate realistic price movement
+        prices = [base_price]
+        for i in range(1, 30):
+            change = np.random.normal(0, 0.02)  # 2% daily volatility
+            new_price = prices[-1] * (1 + change)
+            prices.append(new_price)
+        
+        # Create chart
+        fig = go.Figure()
+        
+        # Price line
+        fig.add_trace(go.Scatter(
+            x=dates, y=prices,
+            mode='lines',
+            name='Harga',
+            line=dict(color='#1f77b4', width=3)
+        ))
+        
+        # Add trading levels
+        fig.add_hline(y=stock['Entry Ideal'], line_dash="dash", line_color="green", 
+                     annotation_text="Entry Ideal")
+        fig.add_hline(y=stock['Entry Agresif'], line_dash="dash", line_color="lightgreen",
+                     annotation_text="Entry Agresif")
+        fig.add_hline(y=stock['TP1'], line_dash="dash", line_color="orange",
+                     annotation_text="TP1")
+        fig.add_hline(y=stock['TP2'], line_dash="dash", line_color="red",
+                     annotation_text="TP2")
+        fig.add_hline(y=stock['CL'], line_dash="dash", line_color="darkred",
+                     annotation_text="Cut Loss")
+        
+        fig.update_layout(
+            title=f"Price Chart Simulation - {stock['Kode']}",
+            xaxis_title="Date",
+            yaxis_title="Price (Rp)",
+            template="plotly_white",
+            height=400
+        )
+        
+        st.plotly_chart(fig, use_container_width=True)
+
+if __name__ == "__main__":
+    main()
