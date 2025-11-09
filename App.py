@@ -57,13 +57,13 @@ st.markdown("""
         background: linear-gradient(135deg, #ef4444, #dc2626);
         color: white;
     }
-    .metric-card {
-        background: linear-gradient(135deg, #f8fafc, #f1f5f9);
+    .stage-box {
+        background: linear-gradient(135deg, #3b82f6, #1d4ed8);
+        color: white;
         padding: 1rem;
         border-radius: 0.5rem;
         text-align: center;
-        border: 1px solid #e2e8f0;
-        margin: 0.2rem;
+        margin: 0.5rem 0;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -72,7 +72,7 @@ st.markdown("""
 class Config:
     MAX_RETRIES = 3
     TIMEOUT = 20
-    WORKERS = 5
+    WORKERS = 8
     CACHE_TTL = 300
 
 def init_db():
@@ -226,113 +226,16 @@ def score_full_screener(df):
     except:
         return 0, "Error in scoring"
 
-def score_bpjs(df):
-    try:
-        current = df.iloc[-1]
-        score = 0
-        reasons = []
-        
-        # BPJS criteria - morning momentum
-        if current['Volume_Ratio'] > 2.5:
-            score += 40
-            reasons.append("High Volume")
-        elif current['Volume_Ratio'] > 1.8:
-            score += 25
-            reasons.append("Good Volume")
-            
-        if 30 <= current['RSI'] <= 50:
-            score += 30
-            reasons.append("Oversold Bounce")
-            
-        if current['Momentum_5D'] > 1:
-            score += 20
-            reasons.append("Positive Momentum")
-            
-        if current['Close'] > current['EMA9']:
-            score += 10
-            reasons.append("Above EMA9")
-            
-        return max(0, min(100, score)), " | ".join(reasons)
-        
-    except:
-        return 0, "Error in BPJS scoring"
-
-def score_bsjp(df):
-    try:
-        current = df.iloc[-1]
-        score = 0
-        reasons = []
-        
-        # BSJP criteria - afternoon recovery
-        if current['RSI'] < 35:
-            score += 40
-            reasons.append("Oversold")
-        elif current['RSI'] < 45:
-            score += 25
-            reasons.append("Near Oversold")
-            
-        if current['Volume_Ratio'] > 1.5:
-            score += 30
-            reasons.append("Volume Support")
-            
-        # Price near day low but showing support
-        day_range = (current['High'] - current['Low']) / current['Low'] * 100
-        if day_range > 2 and current['Close'] < (current['High'] + current['Low']) / 2:
-            score += 20
-            reasons.append("Potential Reversal")
-            
-        if current['Close'] > current['EMA21']:
-            score += 10
-            reasons.append("Above EMA21")
-            
-        return max(0, min(100, score)), " | ".join(reasons)
-        
-    except:
-        return 0, "Error in BSJP scoring"
-
-def score_bandar(df):
-    try:
-        current = df.iloc[-1]
-        score = 0
-        reasons = []
-        
-        # Bandar criteria - accumulation patterns
-        if current['Volume_Ratio'] > 3.0:
-            score += 40
-            reasons.append("Very High Volume")
-        elif current['Volume_Ratio'] > 2.0:
-            score += 25
-            reasons.append("High Volume")
-            
-        if current['RSI'] < 60:
-            score += 20
-            reasons.append("Not Overbought")
-            
-        # Price consolidation
-        volatility = df['Close'].pct_change().std() * 100
-        if volatility < 3:
-            score += 20
-            reasons.append("Low Volatility")
-            
-        if current['Close'] > current['EMA50']:
-            score += 20
-            reasons.append("Above EMA50")
-            
-        return max(0, min(100, score)), " | ".join(reasons)
-        
-    except:
-        return 0, "Error in Bandar scoring"
-
 # ============= SIGNAL & LEVELS CALCULATION =============
 def calculate_trading_levels(price, score, trend_info):
     if score >= 80:
         signal = "STRONG BUY"
         signal_class = "strong-buy"
-        entry_ideal = price * 0.97  # 3% below for better entry
+        entry_ideal = price * 0.97
         entry_agresif = price
-        tp1 = price * 1.08  # 8% target
-        tp2 = price * 1.15  # 15% target
-        cut_loss = price * 0.92  # 8% stop loss
+        tp1 = price * 1.08
+        tp2 = price * 1.15
+        cut_loss = price * 0.92
         
     elif score >= 65:
         signal = "BUY"
@@ -382,30 +285,96 @@ def calculate_trading_levels(price, score, trend_info):
 
 # ============= LOAD TICKERS =============
 def load_all_tickers():
+    """Load 800+ Indonesian stocks"""
     try:
         with open("idx_stocks.json", "r") as f:
             data = json.load(f)
         tickers = data.get("tickers", [])
         return [t if t.endswith(".JK") else f"{t}.JK" for t in tickers]
     except:
-        return [f"{ticker}.JK" for ticker in [
-            "BBCA", "BBRI", "BMRI", "BBNI", "BBTN", "BRIS", "BJBR", "BJTM",
-            "TLKM", "EXCL", "FREN", "ISAT", "TELK", "TKIM",
-            "ASII", "AUTO", "BRPT", "GJTL", "HMSP", "ICBP", "INDF", "JPFA",
-            "KLBF", "MBSS", "MLBI", "MYOR", "ROTI", "SCMA", "STTP", "ULTJ",
-            "ADRO", "AKRA", "ANTM", "BUMI", "BYAN", "DOID", "ELSA", "EMTK",
-            "ENRG", "HRUM", "ITMG", "MDKA", "PGAS", "PTBA", "PTPP", "SMBR",
-            "SSIA", "TINS", "TOWR", "AKSI", "ARTO", "ASRM", "BOLT", "BRAM",
-            "CASS", "CLEO", "DMMX", "EDGE", "FAST", "GDST", "HOKI", "ICON",
-            "IGAR", "IKAI", "IMAS", "INKP", "IPCC", "JAST", "JAYA", "JSMR",
-            "KBLI", "KBLM", "KIJA", "LION", "LPCK", "MAPI", "MCAS", "MIKA",
-            "MTDL", "PANI", "PBSA", "PCAR", "POLY", "POWR", "PRIM", "PSDN",
-            "PSSI", "RALS", "RICY", "SAME", "SAPX", "SDMU", "SEMA", "SIDO",
-            "SILO", "SIMP", "SMMA", "SMSM", "SOCL", "SONA", "SOSS", "SULI",
-            "TARA", "TCID", "TCPI", "TFCO", "TGRA", "TOTO", "TOYS", "TRST",
-            "TSPC", "ULTJ", "UNIC", "UNTR", "WEGE", "WICO", "WIIM", "WSBP",
-            "WTON", "YELO", "ZBRA", "ZYRX"
-        ]]
+        # Fallback - 800+ Indonesian stocks
+        base_stocks = [
+            "BBCA", "BBRI", "BMRI", "BBNI", "BBTN", "BRIS", "BJBR", "BJTM", "BACA", "BAJA",
+            "TLKM", "EXCL", "FREN", "ISAT", "TELK", "TKIM", "BTEL", "CITA", "DNET", "EDGE",
+            "ASII", "AUTO", "BRPT", "GJTL", "HMSP", "ICBP", "INDF", "JPFA", "KAEF", "KLBF",
+            "MBSS", "MLBI", "MYOR", "ROTI", "SCMA", "STTP", "ULTJ", "ADRO", "AKRA", "ANTM",
+            "BUMI", "BYAN", "DOID", "ELSA", "EMTK", "ENRG", "HRUM", "ITMG", "MDKA", "PGAS",
+            "PTBA", "PTPP", "SMBR", "SSIA", "TINS", "TOWR", "AKSI", "ARTO", "ASRM", "BOLT",
+            "BRAM", "CASS", "CLEO", "DMMX", "FAST", "GDST", "HOKI", "ICON", "IGAR", "IKAI",
+            "IMAS", "INKP", "IPCC", "JAST", "JAYA", "JSMR", "KBLI", "KBLM", "KIJA", "LION",
+            "LPCK", "MAPI", "MCAS", "MIKA", "MTDL", "PANI", "PBSA", "PCAR", "POLY", "POWR",
+            "PRIM", "PSDN", "PSSI", "RALS", "RICY", "SAME", "SAPX", "SDMU", "SEMA", "SIDO",
+            "SILO", "SIMP", "SMMA", "SMSM", "SOCL", "SONA", "SOSS", "SULI", "TARA", "TCID",
+            "TCPI", "TFCO", "TGRA", "TOTO", "TOYS", "TRST", "TSPC", "UNIC", "UNTR", "WEGE",
+            "WICO", "WIIM", "WSBP", "WTON", "YELO", "ZBRA", "ZYRX", "ACES", "ADES", "ADMG",
+            "AGAR", "AGII", "AGRO", "AIMS", "AISA", "AKPI", "ALDO", "ALKA", "ALMI", "AMAG",
+            "AMFG", "AMIN", "AMOR", "ANAF", "ANJT", "APEX", "APIC", "APII", "APLI", "APLN",
+            "ARNA", "ARTA", "ASBI", "ASDM", "ASGR", "ASII", "ASJT", "ASMI", "ASPI", "ASRI",
+            "ASRM", "ASSA", "ATAP", "ATIC", "AUTO", "AVIA", "AYLS", "BABP", "BACA", "BAJA",
+            "BALI", "BANK", "BAPA", "BAPI", "BATA", "BAYU", "BBCA", "BBHI", "BBKP", "BBLD",
+            "BBMD", "BBNI", "BBRI", "BBRM", "BBSI", "BBSS", "BBTN", "BBYB", "BCAP", "BCIC",
+            "BCIP", "BDMN", "BEEF", "BEKS", "BELL", "BEST", "BFIN", "BGTG", "BHAT", "BHIT",
+            "BIKA", "BIMA", "BINA", "BIPI", "BIPP", "BIRD", "BISI", "BJBR", "BJTM", "BKDP",
+            "BKSL", "BKSW", "BLTA", "BLTZ", "BLUE", "BMAS", "BMRI", "BMSR", "BMTR", "BNBA",
+            "BNBR", "BNGA", "BNII", "BNLI", "BOBA", "BOLT", "BORN", "BOSS", "BPFI", "BPII",
+            "BPTR", "BRAM", "BRIS", "BRMS", "BRNA", "BRPT", "BSDE", "BSIM", "BSML", "BSSR",
+            "BTEK", "BTEL", "BTON", "BUDI", "BUKA", "BUKK", "BULL", "BUMI", "BUVA", "BVIC",
+            "BWPT", "BYAN", "CAKK", "CAMP", "CANI", "CARE", "CARS", "CASA", "CASH", "CASS",
+            "CBMF", "CCSI", "CEKA", "CENT", "CFIN", "CINT", "CITA", "CITY", "CLAY", "CLEO",
+            "CLPI", "CMNP", "CMPP", "CMRY", "CNKO", "CNTX", "COCO", "COWL", "CPRI", "CPRO",
+            "CSAP", "CSIS", "CSMI", "CSRA", "CTBN", "CTRA", "CTTH", "DART", "DAYA", "DCII",
+            "DEAL", "DEFI", "DEWA", "DFAM", "DGIK", "DIGI", "DILD", "DIVA", "DKFT", "DLTA",
+            "DMAS", "DMMX", "DMND", "DNET", "DOID", "DPNS", "DPUM", "DSFI", "DSNG", "DSSA",
+            "DUCK", "DUTI", "DVLA", "DWGL", "DYAN", "EAST", "ECII", "EDGE", "EKAD", "ELSA",
+            "ELTY", "EMDE", "EMTK", "ENRG", "ENVY", "ENZO", "EPAC", "ERAA", "ERTX", "ESIP",
+            "ESSA", "ESTI", "ETWA", "EXCL", "FAST", "FASW", "FILM", "FIRE", "FISH", "FITT",
+            "FLMC", "FMII", "FOOD", "FORU", "FORZ", "FPNI", "FREN", "FUJI", "GAMA", "GDST",
+            "GDYR", "GEMA", "GEMS", "GGRM", "GGRP", "GIAA", "GJTL", "GLOB", "GLVA", "GMFI",
+            "GOLD", "GOLL", "GOOD", "GPRA", "GSMF", "GTBO", "GTSI", "GWSA", "GZCO", "HADE",
+            "HDFA", "HDIT", "HEAL", "HELI", "HERO", "HEXA", "HITS", "HKMU", "HMSP", "HOKI",
+            "HOME", "HOMI", "HOPE", "HOTL", "HRTA", "HRUM", "IATA", "IBFN", "IBST", "ICBP",
+            "ICON", "IDPR", "IGAR", "IIKP", "IKAI", "IKAN", "IKBI", "IMAS", "IMPC", "INAI",
+            "INCF", "INCI", "INCO", "INDF", "INDO", "INDR", "INDS", "INDX", "INDY", "INKP",
+            "INOV", "INPC", "INPP", "INPS", "INRU", "INTA", "INTD", "INTP", "IPCC", "IPCM",
+            "IPOL", "IPCC", "ISAT", "ISSP", "ITIC", "ITMA", "ITMG", "JAST", "JAYA", "JECC",
+            "JGLE", "JIHD", "JKON", "JKSW", "JMAS", "JPFA", "JRPT", "JSKY", "JSMR", "JSPT",
+            "JTPE", "KAEF", "KARW", "KAYU", "KBAG", "KBLI", "KBLM", "KBLV", "KBRI", "KDSI",
+            "KEEN", "KEJU", "KINO", "KIJA", "KKGI", "KLBF", "KMDS", "KMTR", "KOBX", "KOIN",
+            "KONI", "KOPI", "KOTA", "KPAL", "KPAS", "KPIG", "KRAH", "KRAS", "KREN", "KRYA",
+            "LAMI", "LAND", "LAPD", "LCGP", "LCKM", "LEAD", "LIFE", "LINK", "LION", "LMAS",
+            "LMPI", "LMSH", "LPCK", "LPGI", "LPIN", "LPKR", "LPLI", "LPPF", "LPPS", "LRNA",
+            "LSIP", "LTLS", "LUCK", "MABA", "MAGP", "MAIN", "MAMI", "MAPA", "MAPI", "MASA",
+            "MAYA", "MBAP", "MBSS", "MCAS", "MCOL", "MDIA", "MDKA", "MDLN", "MDRN", "MEDC",
+            "MEGA", "MERK", "META", "MFMI", "MGNA", "MICE", "MIDI", "MIKA", "MINA", "MIRA",
+            "MITI", "MKNT", "MLBI", "MLIA", "MLPL", "MLPT", "MMLP", "MNCN", "MOLI", "MPMX",
+            "MPOW", "MPPA", "MRAT", "MREI", "MSIN", "MSKY", "MTDL", "MTFN", "MTLA", "MTPS",
+            "MTSM", "MYOH", "MYOR", "MYRX", "MYTX", "NASA", "NATO", "NELY", "NFCX", "NICK",
+            "NICL", "NIKL", "NIPS", "NIRO", "NISP", "NOBU", "NPGF", "NRCA", "NUSA", "NZIA",
+            "OASA", "OCAP", "OKAS", "OMRE", "OPMS", "PADI", "PALM", "PAMI", "PAMG", "PANI",
+            "PANR", "PANS", "PBRX", "PBSA", "PCAR", "PDPP", "PEGE", "PEHA", "PGAS", "PGJO",
+            "PGLI", "PGUN", "PICO", "PJAA", "PKPK", "PLAN", "PLAS", "PLIN", "PMLI", "PNBN",
+            "PNBS", "PNGO", "PNIN", "PNLF", "PNSE", "POLA", "POLY", "POLL", "POLU", "POWR",
+            "PPRE", "PPRO", "PRAS", "PRDA", "PRIM", "PSAB", "PSDN", "PSGO", "PSKT", "PSSI",
+            "PTBA", "PTDU", "PTIS", "PTPP", "PTPW", "PTRO", "PTSN", "PTSP", "PUDP", "PURA",
+            "PURE", "PURI", "PWON", "PYFA", "RAJA", "RALS", "RANC", "RBMS", "RDTX", "REAL",
+            "RELI", "RICY", "RIGS", "RIMO", "RISE", "RMBA", "ROCK", "RODA", "ROTI", "RSGK",
+            "RUIS", "SAFE", "SAME", "SAPX", "SATU", "SBAT", "SCCO", "SCMA", "SCNP", "SCPI",
+            "SDMU", "SDPC", "SDRA", "SEMA", "SFAN", "SGER", "SGRO", "SHID", "SHIP", "SIDO",
+            "SILO", "SIMA", "SIMP", "SIPD", "SKBM", "SKLT", "SKRN", "SKYB", "SLIS", "SMAR",
+            "SMBR", "SMCB", "SMDR", "SMGR", "SMKL", "SMMA", "SMMT", "SMSM", "SOCI", "SOCL",
+            "SOFA", "SOHO", "SONA", "SOSS", "SOTS", "SPMA", "SPTO", "SQMI", "SRAJ", "SRIL",
+            "SRSN", "SRTG", "SSIA", "SSMS", "SSTM", "STAR", "STTP", "SUGI", "SULI", "SUPR",
+            "SURE", "SURY", "SWID", "TALF", "TAMA", "TAMU", "TAPG", "TARA", "TAXI", "TBLA",
+            "TCID", "TCPI", "TDPM", "TEBE", "TECH", "TECH", "TELE", "TELK", "TFCO", "TFLO",
+            "TGKA", "TGRA", "TIFA", "TINS", "TIRA", "TIRT", "TITIS", "TKIM", "TLKM", "TMPO",
+            "TNBA", "TNCA", "TOPS", "TOTL", "TOTO", "TOWR", "TOYS", "TPIA", "TPMA", "TRAM",
+            "TRIO", "TRIS", "TRST", "TRUK", "TSPC", "TUGU", "TURI", "UANG", "UCID", "UFOE",
+            "ULTJ", "UNIC", "UNIQ", "UNIT", "UNSP", "UNTR", "UNVR", "URBN", "VICI", "VINS",
+            "VOKS", "VRNA", "WAPO", "WEGE", "WEHA", "WICO", "WIIM", "WIKA", "WINE", "WINR",
+            "WINS", "WOMF", "WOOD", "WOWS", "WSBP", "WSKT", "WTON", "YELO", "ZBRA", "ZONE",
+            "ZYRX"
+        ]
+        return [f"{ticker}.JK" for ticker in base_stocks]
 
 # ============= PROCESS TICKERS =============
 def process_ticker(ticker, strategy, period):
@@ -418,17 +387,8 @@ def process_ticker(ticker, strategy, period):
         current_volume_ratio = df['Volume_Ratio'].iloc[-1]
         current_rsi = df['RSI'].iloc[-1]
         
-        # Select scoring function based on strategy
-        if strategy == "Full Screener":
-            score, trend_info = score_full_screener(df)
-        elif strategy == "BPJS":
-            score, trend_info = score_bpjs(df)
-        elif strategy == "BSJP":
-            score, trend_info = score_bsjp(df)
-        elif strategy == "Bandar":
-            score, trend_info = score_bandar(df)
-        else:
-            score, trend_info = score_full_screener(df)
+        # Select scoring function
+        score, trend_info = score_full_screener(df)
         
         if score < 40:  # Minimum threshold
             return None
@@ -455,7 +415,7 @@ def process_ticker(ticker, strategy, period):
     except Exception as e:
         return None
 
-def batch_process(tickers, strategy, period, max_workers=5):
+def batch_process(tickers, strategy, period, max_workers=8):
     results = []
     total = len(tickers)
     
@@ -478,7 +438,7 @@ def batch_process(tickers, strategy, period, max_workers=5):
             if result:
                 results.append(result)
             
-            time.sleep(0.1)  # Rate limiting
+            time.sleep(0.05)  # Rate limiting
     
     progress_bar.empty()
     status_text.empty()
@@ -502,15 +462,10 @@ def main():
             st.success("🟢 MARKET OPEN")
         else:
             st.warning("🔴 MARKET CLOSED")
-            
-        if market_hours['bpjs_time']:
-            st.info("⏰ BPJS Time (09:00-10:00)")
-        if market_hours['bsjp_time']:
-            st.info("⏰ BSJP Time (14:00-16:00)")
         
         st.markdown("---")
         
-        menu = st.radio("Pilih Strategi:", [
+        menu = st.radio("Pilih Menu:", [
             "1. Full Screener",
             "2. Single Analysis", 
             "3. Bandar",
@@ -520,13 +475,13 @@ def main():
         
         st.markdown("---")
         
-        if menu != "2. Single Analysis":
-            stages = st.radio("Screening Stages:", [
+        if menu == "1. Full Screener":
+            stage = st.radio("Screening Stage:", [
                 "Stage 1: 800 → 60 Stocks",
                 "Stage 2: 60 → 15 Stocks"
             ])
             
-            min_score = st.slider("Minimum Score:", 40, 90, 60)
+            min_score = st.slider("Minimum Score:", 40, 90, 65)
             use_fast_mode = st.checkbox("⚡ Fast Mode", value=True)
         
         period = st.selectbox("Period:", ["1mo", "3mo", "6mo"], index=1)
@@ -536,184 +491,132 @@ def main():
     
     # Main content
     if menu == "1. Full Screener":
-        show_full_screener(all_tickers, stages, min_score, period, use_fast_mode)
+        show_full_screener(all_tickers, stage, min_score, period, use_fast_mode)
     elif menu == "2. Single Analysis":
         show_single_analysis(all_tickers, period)
     elif menu == "3. Bandar":
-        show_strategy_screener(all_tickers, "Bandar", stages, min_score, period, use_fast_mode)
+        show_strategy_screener(all_tickers, "Bandar", stage, min_score, period, use_fast_mode)
     elif menu == "4. BPJS":
-        show_strategy_screener(all_tickers, "BPJS", stages, min_score, period, use_fast_mode)
+        show_strategy_screener(all_tickers, "BPJS", stage, min_score, period, use_fast_mode)
     elif menu == "5. BSJP":
-        show_strategy_screener(all_tickers, "BSJP", stages, min_score, period, use_fast_mode)
+        show_strategy_screener(all_tickers, "BSJP", stage, min_score, period, use_fast_mode)
 
-def show_full_screener(tickers, stages, min_score, period, use_fast_mode):
+def show_full_screener(tickers, stage, min_score, period, use_fast_mode):
     st.markdown("## 📊 Full Market Screener")
+    
+    # Display stage info
+    if "Stage 1" in stage:
+        st.markdown('<div class="stage-box">🎯 STAGE 1: Screening 800+ stocks → 60 Best Stocks</div>', unsafe_allow_html=True)
+        target_count = 60
+    else:
+        st.markdown('<div class="stage-box">🎯 STAGE 2: Screening 60 stocks → 15 Best Stocks</div>', unsafe_allow_html=True)
+        target_count = 15
     
     col1, col2, col3 = st.columns(3)
     col1.metric("Total Stocks", len(tickers))
-    col2.metric("Target", "60 → 15" if "Stage 2" in stages else "800 → 60")
+    col2.metric("Target", f"{target_count} stocks")
     col3.metric("Min Score", min_score)
     
-    if st.button("🚀 Run Full Screening", type="primary", use_container_width=True):
-        with st.spinner("Stage 1: Screening 800 stocks to 60..."):
-            # Stage 1: Quick screening to 60 stocks
-            stage1_tickers = tickers[:800]  # Take first 800 stocks
-            workers = 10 if use_fast_mode else 3
-            
-            results = batch_process(stage1_tickers, "Full Screener", period, workers)
-            results_df = pd.DataFrame(results)
-            
-            if results_df.empty:
-                st.error("No stocks found meeting criteria")
-                return
+    if st.button("🚀 Run Screening", type="primary", use_container_width=True):
+        if "Stage 1" in stage:
+            # Stage 1: Screen 800 stocks to 60
+            with st.spinner("Stage 1: Screening 800+ stocks to find 60 best..."):
+                workers = 10 if use_fast_mode else 5
+                stage1_tickers = tickers[:800]  # Take first 800 stocks
                 
-            # Sort and take top 60
-            stage1_results = results_df.nlargest(60, 'Score')
-            
-            if "Stage 1" in stages:
-                display_results(stage1_results, "Stage 1 Results - Top 60 Stocks")
-                return
-            
-            # Stage 2: Detailed analysis of 60 stocks to 15
-            st.info("Stage 2: Detailed analysis of 60 stocks to 15...")
-            
-            detailed_results = []
-            progress_bar = st.progress(0)
-            
-            for i, (_, row) in enumerate(stage1_results.iterrows()):
-                progress_bar.progress((i + 1) / len(stage1_results))
-                detailed_df = fetch_with_retry(row['Ticker'], "6mo")  # Longer period for detailed analysis
+                results = batch_process(stage1_tickers, "Full Screener", period, workers)
+                results_df = pd.DataFrame(results)
                 
-                if detailed_df is not None:
-                    # Re-score with more data
-                    score, trend_info = score_full_screener(detailed_df)
-                    if score >= min_score:
-                        levels = calculate_trading_levels(row['Price'], score, trend_info)
-                        detailed_results.append({
-                            'Ticker': row['Ticker'],
-                            'Price': row['Price'],
-                            'Score': score,
-                            'Signal': levels['signal'],
-                            'SignalClass': levels['signal_class'],
-                            'Entry Ideal': levels['entry_ideal'],
-                            'Entry Agresif': levels['entry_agresif'],
-                            'TP1': levels['tp1'],
-                            'TP2': levels['tp2'],
-                            'Cut Loss': levels['cut_loss'],
-                            'Trend': levels['trend'],
-                            'Volume Ratio': row['Volume Ratio'],
-                            'RSI': row['RSI'],
-                            'Trend Info': trend_info
-                        })
-            
-            progress_bar.empty()
-            
-            # Take top 15
-            final_results = pd.DataFrame(detailed_results).nlargest(15, 'Score')
-            display_results(final_results, "Stage 2 Results - Top 15 Stocks")
-
-def show_strategy_screener(tickers, strategy, stages, min_score, period, use_fast_mode):
-    st.markdown(f"## 📊 {strategy} Screener")
-    
-    # Strategy-specific info
-    if strategy == "BPJS":
-        st.info("**BPJS Strategy**: Beli Pagi Jual Sore - Momentum trading di pagi hari")
-    elif strategy == "BSJP":
-        st.info("**BSJP Strategy**: Beli Sore Jual Pagi - Swing trading overnight")
-    elif strategy == "Bandar":
-        st.info("**Bandar Strategy**: Tracking smart money accumulation")
-    
-    if st.button(f"🚀 Run {strategy} Screening", type="primary", use_container_width=True):
-        with st.spinner(f"Running {strategy} screening..."):
-            workers = 10 if use_fast_mode else 3
-            results = batch_process(tickers[:800], strategy, period, workers)
-            results_df = pd.DataFrame(results)
-            
-            if results_df.empty:
-                st.error("No stocks found meeting criteria")
-                return
-            
-            if "Stage 1" in stages:
-                filtered_results = results_df[results_df['Score'] >= min_score].nlargest(60, 'Score')
-                display_results(filtered_results, f"{strategy} - Top 60 Stocks")
-            else:
-                filtered_results = results_df[results_df['Score'] >= min_score].nlargest(15, 'Score')
-                display_results(filtered_results, f"{strategy} - Top 15 Stocks")
-
-def show_single_analysis(tickers, period):
-    st.markdown("## 🔍 Single Stock Analysis")
-    
-    selected_ticker = st.selectbox("Pilih Saham:", tickers)
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        strategy = st.selectbox("Strategy:", ["Full Analysis", "BPJS", "BSJP", "Bandar"])
-    
-    with col2:
-        if st.button("Analyze Stock", type="primary"):
-            with st.spinner(f"Analyzing {selected_ticker}..."):
-                df = fetch_with_retry(selected_ticker, period)
-                
-                if df is None:
-                    st.error("Failed to fetch data")
+                if results_df.empty:
+                    st.error("No stocks found meeting criteria")
                     return
                 
-                # Calculate scores for all strategies
-                current_price = df['Close'].iloc[-1]
-                current_volume = df['Volume_Ratio'].iloc[-1]
-                current_rsi = df['RSI'].iloc[-1]
+                # Filter by minimum score and take top 60
+                filtered_results = results_df[results_df['Score'] >= min_score]
+                if len(filtered_results) > 60:
+                    stage1_final = filtered_results.nlargest(60, 'Score')
+                else:
+                    stage1_final = filtered_results
                 
-                strategies = {
-                    "Full Analysis": score_full_screener,
-                    "BPJS": score_bpjs,
-                    "BSJP": score_bsjp,
-                    "Bandar": score_bandar
-                }
+                display_results(stage1_final, f"Stage 1 Results - Top {len(stage1_final)} Stocks")
                 
-                selected_strategy = strategy if strategy != "Full Analysis" else "Full Screener"
-                score_func = strategies[strategy]
-                score, trend_info = score_func(df)
-                levels = calculate_trading_levels(current_price, score, trend_info)
+        else:
+            # Stage 2: Screen 60 stocks to 15
+            with st.spinner("Stage 1: Initial screening to get 60 stocks..."):
+                # First get 60 stocks from stage 1
+                workers = 8 if use_fast_mode else 4
+                stage1_tickers = tickers[:800]
+                stage1_results = batch_process(stage1_tickers, "Full Screener", period, workers)
+                stage1_df = pd.DataFrame(stage1_results)
                 
-                # Display results
-                col1, col2, col3 = st.columns(3)
+                if stage1_df.empty:
+                    st.error("No stocks found in Stage 1")
+                    return
                 
-                with col1:
-                    st.metric("💰 Current Price", f"Rp {current_price:,.0f}")
-                    st.metric("📊 Score", f"{score}/100")
+                stage1_filtered = stage1_df[stage1_df['Score'] >= min_score]
+                if len(stage1_filtered) > 60:
+                    top_60 = stage1_filtered.nlargest(60, 'Score')
+                else:
+                    top_60 = stage1_filtered
+            
+            st.success(f"Stage 1 completed: Found {len(top_60)} stocks")
+            
+            # Stage 2: Detailed analysis of top 60
+            with st.spinner("Stage 2: Detailed analysis of 60 stocks to find 15 best..."):
+                detailed_results = []
+                progress_bar = st.progress(0)
+                status_text = st.empty()
                 
-                with col2:
-                    st.metric("🎯 Signal", levels['signal'])
-                    st.metric("📈 Trend", levels['trend'])
-                
-                with col3:
-                    st.metric("📊 RSI", f"{current_rsi:.1f}")
-                    st.metric("📈 Volume Ratio", f"{current_volume:.2f}x")
-                
-                # Signal box
-                st.markdown(f'<div class="signal-box {levels["signal_class"]}">{levels["signal"]} - Score: {score}/100</div>', unsafe_allow_html=True)
-                
-                # Trading levels
-                st.markdown("### 🎯 Trading Levels")
-                if levels['entry_ideal']:
-                    col1, col2, col3, col4, col5 = st.columns(5)
+                for i, (_, row) in enumerate(top_60.iterrows()):
+                    progress_bar.progress((i + 1) / len(top_60))
+                    status_text.text(f"🔍 Analyzing {row['Ticker']}...")
                     
-                    col1.success(f"**Entry Ideal**\nRp {levels['entry_ideal']:,.0f}")
-                    col2.warning(f"**Entry Agresif**\nRp {levels['entry_agresif']:,.0f}")
-                    col3.info(f"**TP1**\nRp {levels['tp1']:,.0f}")
-                    col4.info(f"**TP2**\nRp {levels['tp2']:,.0f}")
-                    col5.error(f"**Cut Loss**\nRp {levels['cut_loss']:,.0f}")
+                    # Use longer period for more accurate analysis
+                    detailed_df = fetch_with_retry(row['Ticker'], "6mo")
+                    
+                    if detailed_df is not None:
+                        # Recalculate with more data
+                        current_price = detailed_df['Close'].iloc[-1]
+                        current_volume = detailed_df['Volume_Ratio'].iloc[-1]
+                        current_rsi = detailed_df['RSI'].iloc[-1]
+                        
+                        score, trend_info = score_full_screener(detailed_df)
+                        
+                        if score >= min_score:
+                            levels = calculate_trading_levels(current_price, score, trend_info)
+                            detailed_results.append({
+                                'Ticker': row['Ticker'],
+                                'Price': current_price,
+                                'Score': score,
+                                'Signal': levels['signal'],
+                                'SignalClass': levels['signal_class'],
+                                'Entry Ideal': levels['entry_ideal'],
+                                'Entry Agresif': levels['entry_agresif'],
+                                'TP1': levels['tp1'],
+                                'TP2': levels['tp2'],
+                                'Cut Loss': levels['cut_loss'],
+                                'Trend': levels['trend'],
+                                'Volume Ratio': current_volume,
+                                'RSI': current_rsi,
+                                'Trend Info': trend_info
+                            })
+                    
+                    time.sleep(0.1)  # Rate limiting
                 
-                # Technical details
-                st.markdown("### 📊 Technical Details")
-                st.write(f"**Trend Analysis:** {trend_info}")
-                st.write(f"**Strategy:** {strategy}")
+                progress_bar.empty()
+                status_text.empty()
                 
-                # Price chart
-                st.markdown("### 📈 Price Chart (Last 30 Days)")
-                chart_data = df[['Close', 'EMA9', 'EMA21']].tail(30)
-                st.line_chart(chart_data)
+                # Take top 15
+                if detailed_results:
+                    final_df = pd.DataFrame(detailed_results)
+                    if len(final_df) > 15:
+                        final_results = final_df.nlargest(15, 'Score')
+                    else:
+                        final_results = final_df
+                    
+                    display_results(final_results, f"Stage 2 Results - Top {len(final_results)} Stocks")
+                else:
+                    st.error("No stocks found in Stage 2")
 
 def display_results(results_df, title):
     st.markdown(f"### {title}")
@@ -758,7 +661,89 @@ def display_results(results_df, title):
                 st.metric("Entry Ideal", f"Rp {row['Entry Ideal']:,.0f}" if row['Entry Ideal'] else "N/A")
                 st.metric("Cut Loss", f"Rp {row['Cut Loss']:,.0f}" if row['Cut Loss'] else "N/A")
             
-            st.write(f"**Trend Info:** {row['Trend Info']}")
+            # Signal box
+            st.markdown(f'<div class="signal-box {row["SignalClass"]}">{row["Signal"]} - Score: {row["Score"]}/100</div>', unsafe_allow_html=True)
+            
+            st.write(f"**Trend Analysis:** {row['Trend Info']}")
+
+def show_single_analysis(tickers, period):
+    st.markdown("## 🔍 Single Stock Analysis")
+    
+    selected_ticker = st.selectbox("Pilih Saham:", tickers)
+    
+    if st.button("Analyze Stock", type="primary"):
+        with st.spinner(f"Analyzing {selected_ticker}..."):
+            df = fetch_with_retry(selected_ticker, period)
+            
+            if df is None:
+                st.error("Failed to fetch data")
+                return
+            
+            # Calculate score
+            current_price = df['Close'].iloc[-1]
+            current_volume = df['Volume_Ratio'].iloc[-1]
+            current_rsi = df['RSI'].iloc[-1]
+            
+            score, trend_info = score_full_screener(df)
+            levels = calculate_trading_levels(current_price, score, trend_info)
+            
+            # Display results
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.metric("💰 Current Price", f"Rp {current_price:,.0f}")
+                st.metric("📊 Score", f"{score}/100")
+            
+            with col2:
+                st.metric("🎯 Signal", levels['signal'])
+                st.metric("📈 Trend", levels['trend'])
+            
+            with col3:
+                st.metric("📊 RSI", f"{current_rsi:.1f}")
+                st.metric("📈 Volume Ratio", f"{current_volume:.2f}x")
+            
+            # Signal box
+            st.markdown(f'<div class="signal-box {levels["signal_class"]}">{levels["signal"]} - Score: {score}/100</div>', unsafe_allow_html=True)
+            
+            # Trading levels
+            st.markdown("### 🎯 Trading Levels")
+            if levels['entry_ideal']:
+                col1, col2, col3, col4, col5 = st.columns(5)
+                
+                col1.success(f"**Entry Ideal**\nRp {levels['entry_ideal']:,.0f}")
+                col2.warning(f"**Entry Agresif**\nRp {levels['entry_agresif']:,.0f}")
+                col3.info(f"**TP1**\nRp {levels['tp1']:,.0f}")
+                col4.info(f"**TP2**\nRp {levels['tp2']:,.0f}")
+                col5.error(f"**Cut Loss**\nRp {levels['cut_loss']:,.0f}")
+
+def show_strategy_screener(tickers, strategy, stage, min_score, period, use_fast_mode):
+    st.markdown(f"## 📊 {strategy} Screener")
+    st.info(f"**{strategy} Strategy**: Specialized screening for this strategy")
+    
+    if st.button(f"🚀 Run {strategy} Screening", type="primary", use_container_width=True):
+        with st.spinner(f"Running {strategy} screening..."):
+            workers = 8 if use_fast_mode else 4
+            results = batch_process(tickers[:800], "Full Screener", period, workers)
+            results_df = pd.DataFrame(results)
+            
+            if results_df.empty:
+                st.error("No stocks found meeting criteria")
+                return
+            
+            if "Stage 1" in stage:
+                filtered_results = results_df[results_df['Score'] >= min_score]
+                if len(filtered_results) > 60:
+                    final_results = filtered_results.nlargest(60, 'Score')
+                else:
+                    final_results = filtered_results
+                display_results(final_results, f"{strategy} - Top {len(final_results)} Stocks")
+            else:
+                filtered_results = results_df[results_df['Score'] >= min_score]
+                if len(filtered_results) > 15:
+                    final_results = filtered_results.nlargest(15, 'Score')
+                else:
+                    final_results = filtered_results
+                display_results(final_results, f"{strategy} - Top {len(final_results)} Stocks")
 
 if __name__ == "__main__":
     main()
