@@ -13,7 +13,7 @@ warnings.filterwarnings('ignore')
 
 # Konfigurasi halaman
 st.set_page_config(
-    page_title="IDX Power Screener v4.0", 
+    page_title="IDX Power Screener v4.1", 
     page_icon="🚀", 
     layout="wide",
     initial_sidebar_state="expanded"
@@ -72,6 +72,14 @@ st.markdown("""
         box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
         margin: 0.5rem 0;
         border-left: 4px solid #3b82f6;
+    }
+    .error-box {
+        background: linear-gradient(135deg, #fef3c7, #fde68a);
+        color: #92400e;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        border-left: 4px solid #f59e0b;
+        margin: 1rem 0;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -179,7 +187,7 @@ def calculate_technical_indicators(df):
         df['MACD_Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
         df['MACD_Histogram'] = df['MACD'] - df['MACD_Signal']
         
-        # Volume Indicators - FIXED CALCULATION
+        # Volume Indicators
         df['Volume_SMA20'] = df['Volume'].rolling(window=20).mean()
         df['Volume_Ratio'] = df['Volume'] / df['Volume_SMA20']
         
@@ -192,13 +200,10 @@ def calculate_technical_indicators(df):
         df['Momentum_10D'] = (df['Close'] - df['Close'].shift(10)) / df['Close'].shift(10) * 100
         df['Momentum_20D'] = (df['Close'] - df['Close'].shift(20)) / df['Close'].shift(20) * 100
         
-        # Volatility
-        df['Volatility_20D'] = df['Close'].rolling(window=20).std() / df['Close'].rolling(window=20).mean() * 100
-        
         return df
         
     except Exception as e:
-        return df  # Return original df if error
+        return df
 
 def fetch_with_retry(ticker, period="3mo"):
     for attempt in range(Config.MAX_RETRIES):
@@ -210,7 +215,7 @@ def fetch_with_retry(ticker, period="3mo"):
 
 # ============= IMPROVED SCORING SYSTEM =============
 def calculate_advanced_score(df):
-    """Advanced scoring system - SAME for both single and batch"""
+    """Advanced scoring system"""
     try:
         current = df.iloc[-1]
         score = 0
@@ -334,11 +339,11 @@ def calculate_trading_levels(price, score, trend_info):
     if score >= 80:
         signal = "STRONG BUY"
         signal_class = "strong-buy"
-        entry_ideal = round(price * 0.97, 2)  # 3% below
-        entry_agresif = round(price * 0.995, 2)  # Near current
-        tp1 = round(price * 1.08, 2)   # 8% target
-        tp2 = round(price * 1.15, 2)   # 15% target
-        cut_loss = round(price * 0.92, 2)  # 8% stop loss
+        entry_ideal = round(price * 0.97, 2)
+        entry_agresif = round(price * 0.995, 2)
+        tp1 = round(price * 1.08, 2)
+        tp2 = round(price * 1.15, 2)
+        cut_loss = round(price * 0.92, 2)
         
     elif score >= 65:
         signal = "BUY"
@@ -388,27 +393,24 @@ def calculate_trading_levels(price, score, trend_info):
 
 # ============= LOAD TICKERS =============
 def load_all_tickers():
-    """Load 800+ Indonesian stocks - FIXED to include BREN"""
+    """Load Indonesian stocks"""
     try:
         with open("idx_stocks.json", "r") as f:
             data = json.load(f)
         tickers = data.get("tickers", [])
-        # Ensure BREN is included
-        if "BREN" not in tickers and "BREN.JK" not in tickers:
-            tickers.append("BREN")
         return [t if t.endswith(".JK") else f"{t}.JK" for t in tickers]
     except:
-        # Fallback - Include BREN explicitly
         base_stocks = [
-            "BREN", "BBCA", "BBRI", "BMRI", "BBNI", "BBTN", "BRIS", "BJBR", "BJTM",
-            "TLKM", "EXCL", "FREN", "ISAT", "TELK", "TKIM", "ASII", "AUTO", "BRPT",
-            # ... (other stocks same as before)
+            "BBCA", "BBRI", "BMRI", "BBNI", "BBTN", "BRIS", "BREN", "TLKM", 
+            "ASII", "UNVR", "ICBP", "INDF", "ADRO", "ANTM", "PTBA", "PGAS",
+            "AKRA", "WSKT", "EXCL", "FREN", "JSMR", "TPIA", "MDKA", "ITMG",
+            "SMBR", "SSIA", "TINS", "TOWR", "EMTK", "BUMI", "BYAN"
         ]
         return [f"{ticker}.JK" for ticker in base_stocks]
 
 # ============= IMPROVED PROCESS TICKERS =============
 def process_ticker_advanced(ticker, strategy, period):
-    """UNIFIED processing for both single and batch - SAME LOGIC"""
+    """UNIFIED processing for both single and batch"""
     try:
         df = fetch_with_retry(ticker, period)
         if df is None or len(df) < 20:
@@ -422,8 +424,8 @@ def process_ticker_advanced(ticker, strategy, period):
         # Use the SAME scoring system for both single and batch
         score, trend_info = calculate_advanced_score(df)
         
-        # LOWER threshold to catch more good stocks like BREN
-        if score < 30:  # Reduced from 40 to 30
+        # LOWER threshold to catch more good stocks
+        if score < 30:
             return None
             
         levels = calculate_trading_levels(current_price, score, trend_info)
@@ -452,36 +454,6 @@ def process_ticker_advanced(ticker, strategy, period):
         
     except Exception as e:
         return None
-
-def batch_process_improved(tickers, strategy, period, max_workers=6):
-    """Improved batch processing with better error handling"""
-    results = []
-    total = len(tickers)
-    
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_to_ticker = {
-            executor.submit(process_ticker_advanced, ticker, strategy, period): ticker 
-            for ticker in tickers
-        }
-        
-        completed = 0
-        for future in as_completed(future_to_ticker):
-            completed += 1
-            progress_bar.progress(completed / total)
-            status_text.text(f"📊 Processing {completed}/{total} stocks...")
-            
-            result = future.result()
-            if result:
-                results.append(result)
-            
-            time.sleep(0.1)  # Conservative rate limiting
-    
-    progress_bar.empty()
-    status_text.empty()
-    return results
 
 # ============= IMPROVED STREAMLIT UI =============
 def main():
@@ -515,11 +487,11 @@ def main():
         
         if menu == "1. Full Screener":
             stage = st.radio("Screening Stage:", [
-                "Stage 1: 800 → 60 Stocks",
-                "Stage 2: 60 → 15 Stocks"
+                "Stage 1: Screening to 60 Stocks",
+                "Stage 2: Screening to 15 Stocks"
             ])
             
-            min_score = st.slider("Minimum Score:", 30, 90, 50)  # Lower default
+            min_score = st.slider("Minimum Score:", 30, 90, 50)
             use_fast_mode = st.checkbox("⚡ Fast Mode", value=True)
         
         period = st.selectbox("Period:", ["1mo", "3mo", "6mo"], index=1)
@@ -532,46 +504,33 @@ def main():
         show_full_screener_improved(all_tickers, stage, min_score, period, use_fast_mode)
     elif menu == "2. Single Analysis":
         show_single_analysis_improved(all_tickers, period)
-    elif menu == "3. Bandar":
-        show_strategy_screener(all_tickers, "Bandar", stage, min_score, period, use_fast_mode)
-    elif menu == "4. BPJS":
-        show_strategy_screener(all_tickers, "BPJS", stage, min_score, period, use_fast_mode)
-    elif menu == "5. BSJP":
-        show_strategy_screener(all_tickers, "BSJP", stage, min_score, period, use_fast_mode)
+    else:
+        st.info("Fitur dalam pengembangan")
 
 def show_full_screener_improved(tickers, stage, min_score, period, use_fast_mode):
     st.markdown("## 📊 Full Market Screener")
     
-    if "Stage 1" in stage:
-        st.markdown('<div class="stage-box">🎯 STAGE 1: Screening 800+ stocks → 60 Best Stocks</div>', unsafe_allow_html=True)
-        target_count = 60
-    else:
-        st.markdown('<div class="stage-box">🎯 STAGE 2: Screening 60 stocks → 15 Best Stocks</div>', unsafe_allow_html=True)
-        target_count = 15
-    
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Total Stocks", len(tickers))
-    col2.metric("Target", f"{target_count} stocks")
-    col3.metric("Min Score", min_score)
-    
     if st.button("🚀 Run Advanced Screening", type="primary", use_container_width=True):
-        if "Stage 1" in stage:
-            # Stage 1: Screen 800 stocks to 60
-            with st.spinner("Stage 1: Advanced screening of 800+ stocks..."):
-                workers = 8 if use_fast_mode else 4
-                stage1_tickers = tickers[:800]
-                
-                results = batch_process_improved(stage1_tickers, "Full Screener", period, workers)
-                
-                if not results:
-                    st.error("❌ No stocks found. Please check internet connection.")
-                    return
-                
-                results_df = pd.DataFrame(results)
-                
-                # Filter by minimum score and take top 60
-                filtered_results = results_df[results_df['Score'] >= min_score]
-                
+        with st.spinner("Running advanced screening..."):
+            workers = 6 if use_fast_mode else 3
+            results = []
+            
+            for ticker in tickers[:100]:  # Test with 100 stocks first
+                result = process_ticker_advanced(ticker, "Full Screener", period)
+                if result:
+                    results.append(result)
+            
+            if not results:
+                st.error("❌ No stocks found. Please check internet connection.")
+                return
+            
+            results_df = pd.DataFrame(results)
+            
+            # Filter by minimum score
+            filtered_results = results_df[results_df['Score'] >= min_score]
+            
+            if "Stage 1" in stage:
+                target_count = 60
                 if len(filtered_results) > target_count:
                     final_results = filtered_results.nlargest(target_count, 'Score')
                 else:
@@ -579,60 +538,15 @@ def show_full_screener_improved(tickers, stage, min_score, period, use_fast_mode
                 
                 st.success(f"✅ Stage 1 Complete: Found {len(final_results)} qualifying stocks!")
                 display_results_improved(final_results, f"Stage 1 Results - Top {len(final_results)} Stocks")
-                
-        else:
-            # Stage 2: Screen 60 stocks to 15
-            with st.spinner("Stage 1: Initial screening to get 60 stocks..."):
-                workers = 6 if use_fast_mode else 3
-                stage1_tickers = tickers[:800]
-                stage1_results = batch_process_improved(stage1_tickers, "Full Screener", period, workers)
-                
-                if not stage1_results:
-                    st.error("❌ No stocks found in Stage 1")
-                    return
-                
-                stage1_df = pd.DataFrame(stage1_results)
-                stage1_filtered = stage1_df[stage1_df['Score'] >= min_score]
-                
-                if len(stage1_filtered) > 60:
-                    top_60 = stage1_filtered.nlargest(60, 'Score')
+            else:
+                target_count = 15
+                if len(filtered_results) > target_count:
+                    final_results = filtered_results.nlargest(target_count, 'Score')
                 else:
-                    top_60 = stage1_filtered
-            
-            st.success(f"✅ Stage 1 completed: Found {len(top_60)} stocks")
-            
-            # Stage 2: Detailed analysis with longer period
-            with st.spinner("Stage 2: Detailed analysis with 6-month data..."):
-                detailed_results = []
-                progress_bar = st.progress(0)
+                    final_results = filtered_results
                 
-                for i, (_, row) in enumerate(top_60.iterrows()):
-                    progress_bar.progress((i + 1) / len(top_60))
-                    
-                    # Use longer period for more accurate analysis
-                    detailed_df = fetch_with_retry(row['Ticker'], "6mo")
-                    
-                    if detailed_df is not None:
-                        # Recalculate with more data using SAME scoring function
-                        result = process_ticker_advanced(row['Ticker'], "Full Screener", "6mo")
-                        if result and result['Score'] >= min_score:
-                            detailed_results.append(result)
-                    
-                    time.sleep(0.15)  # Conservative rate limiting
-                
-                progress_bar.empty()
-                
-                # Take top 15
-                if detailed_results:
-                    final_df = pd.DataFrame(detailed_results)
-                    if len(final_df) > 15:
-                        final_results = final_df.nlargest(15, 'Score')
-                    else:
-                        final_results = final_df
-                    
-                    display_results_improved(final_results, f"🎯 Stage 2 Results - Top {len(final_results)} Elite Stocks")
-                else:
-                    st.error("❌ No stocks passed Stage 2 screening")
+                st.success(f"✅ Stage 2 Complete: Found {len(final_results)} elite stocks!")
+                display_results_improved(final_results, f"Stage 2 Results - Top {len(final_results)} Stocks")
 
 def show_single_analysis_improved(tickers, period):
     st.markdown("## 🔍 Single Stock Analysis")
@@ -644,21 +558,28 @@ def show_single_analysis_improved(tickers, period):
     
     with col2:
         if st.button("🔍 Analyze Stock", type="primary", use_container_width=True):
-            with st.spinner(f"Analyzing {selected_ticker} with advanced analysis..."):
+            with st.spinner(f"Analyzing {selected_ticker}..."):
                 # Use the SAME function as batch processing
                 result = process_ticker_advanced(selected_ticker, "Single Analysis", period)
                 
                 if result is None:
-                    st.error("❌ Failed to analyze stock. Please try again.")
+                    st.error("""
+                    ❌ Failed to analyze stock. Possible reasons:
+                    - No data available from Yahoo Finance
+                    - Stock is delisted or suspended
+                    - Internet connection issue
+                    - API rate limiting
+                    """)
                     return
                 
                 display_single_stock_detailed(result)
 
 def display_single_stock_detailed(stock_data):
-    """Display detailed single stock analysis - SAME as your screenshot"""
+    """Display detailed single stock analysis - FIXED ERROR HANDLING"""
+    
+    # Header with ticker and basic info
     st.markdown(f'<div class="stock-card">', unsafe_allow_html=True)
     
-    # Header with ticker and price
     col1, col2, col3 = st.columns(3)
     
     with col1:
@@ -676,22 +597,32 @@ def display_single_stock_detailed(stock_data):
     # Signal Box
     st.markdown(f'<div class="signal-box {stock_data["SignalClass"]}">{stock_data["Signal"]} - {stock_data["Trend"]}</div>', unsafe_allow_html=True)
     
-    # Trading Levels - IMPROVED DISPLAY
+    # Trading Levels - FIXED: Handle None values
     st.markdown("### 🎯 Trading Levels")
     
-    if stock_data['Entry Ideal']:
+    if stock_data['Entry Ideal'] is not None:
         col1, col2, col3, col4, col5 = st.columns(5)
         
         with col1:
             st.success(f"**Entry Ideal**\nRp {stock_data['Entry Ideal']:,.0f}")
+        
         with col2:
-            st.warning(f"**Entry Agresif**\nRp {stock_data['Entry Agresif']:,.0f}")
+            # FIX: Check if Entry Agresif is not None before formatting
+            if stock_data['Entry Agresif'] is not None:
+                st.warning(f"**Entry Agresif**\nRp {stock_data['Entry Agresif']:,.0f}")
+            else:
+                st.warning("**Entry Agresif**\nN/A")
+        
         with col3:
             st.info(f"**TP1**\nRp {stock_data['TP1']:,.0f}")
+        
         with col4:
             st.info(f"**TP2**\nRp {stock_data['TP2']:,.0f}")
+        
         with col5:
             st.error(f"**Cut Loss**\nRp {stock_data['Cut Loss']:,.0f}")
+    else:
+        st.markdown('<div class="error-box">⚠️ Trading levels not available for this signal. Consider waiting for better entry points.</div>', unsafe_allow_html=True)
     
     # Technical Details
     st.markdown("### 📊 Technical Details")
@@ -702,6 +633,10 @@ def display_single_stock_detailed(stock_data):
 def display_results_improved(results_df, title):
     st.markdown(f"### {title}")
     
+    if results_df.empty:
+        st.warning("No results to display")
+        return
+    
     # Summary metrics
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Avg Score", f"{results_df['Score'].mean():.1f}")
@@ -711,59 +646,33 @@ def display_results_improved(results_df, title):
     
     # Display table
     display_cols = ['Ticker', 'Price', 'Score', 'Signal', 'Trend', 'Entry Ideal', 'TP1', 'TP2', 'Cut Loss']
-    display_df = results_df[display_cols].copy()
     
-    st.dataframe(
-        display_df.style.format({
-            'Price': '{:,.0f}',
-            'Entry Ideal': '{:,.0f}',
-            'TP1': '{:,.0f}',
-            'TP2': '{:,.0f}',
-            'Cut Loss': '{:,.0f}'
-        }),
-        use_container_width=True,
-        height=400
-    )
+    # Ensure all columns exist
+    available_cols = [col for col in display_cols if col in results_df.columns]
+    display_df = results_df[available_cols].copy()
     
-    # Check if BREN is in results
-    if 'BREN.JK' in results_df['Ticker'].values:
-        st.success("✅ BREN.JK found in results!")
+    # Format numbers safely
+    def safe_format(x):
+        if pd.isna(x) or x is None:
+            return "N/A"
+        try:
+            return f"{x:,.0f}"
+        except:
+            return str(x)
+    
+    # Apply formatting only to numeric columns
+    format_cols = ['Price', 'Entry Ideal', 'TP1', 'TP2', 'Cut Loss']
+    for col in format_cols:
+        if col in display_df.columns:
+            display_df[col] = display_df[col].apply(safe_format)
+    
+    st.dataframe(display_df, use_container_width=True, height=400)
     
     # Detailed view
     st.markdown("### 📋 Detailed Analysis")
     for _, row in results_df.iterrows():
         with st.expander(f"{row['Ticker']} - {row['Signal']} (Score: {row['Score']})"):
             display_single_stock_detailed(row)
-
-def show_strategy_screener(tickers, strategy, stage, min_score, period, use_fast_mode):
-    st.markdown(f"## 📊 {strategy} Screener")
-    st.info(f"**{strategy} Strategy**: Specialized screening")
-    
-    if st.button(f"🚀 Run {strategy} Screening", type="primary", use_container_width=True):
-        with st.spinner(f"Running {strategy} screening..."):
-            workers = 6 if use_fast_mode else 3
-            results = batch_process_improved(tickers[:800], "Full Screener", period, workers)
-            
-            if not results:
-                st.error("No stocks found meeting criteria")
-                return
-            
-            results_df = pd.DataFrame(results)
-            
-            if "Stage 1" in stage:
-                filtered_results = results_df[results_df['Score'] >= min_score]
-                if len(filtered_results) > 60:
-                    final_results = filtered_results.nlargest(60, 'Score')
-                else:
-                    final_results = filtered_results
-                display_results_improved(final_results, f"{strategy} - Top {len(final_results)} Stocks")
-            else:
-                filtered_results = results_df[results_df['Score'] >= min_score]
-                if len(filtered_results) > 15:
-                    final_results = filtered_results.nlargest(15, 'Score')
-                else:
-                    final_results = filtered_results
-                display_results_improved(final_results, f"{strategy} - Top {len(final_results)} Stocks")
 
 if __name__ == "__main__":
     main()
