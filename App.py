@@ -511,38 +511,35 @@ def process_ticker(ticker, strategy, period):
     except:
         return None
 
-def two_stage_scan(tickers, strategy, period, stocks_to_scan, stage1_limit=50, stage2_limit=10, use_parallel=True):
+def two_stage_scan(tickers, strategy, period, stage1_limit=50, stage2_limit=10, use_parallel=True):
     """
-    STAGE 1: Scan N stocks → Get Top X
-    STAGE 2: Deep analysis on Top X → Get Top Y Elite
+    STAGE 1: Scan ALL tickers → Get Top 50
+    STAGE 2: Deep analysis on Top 50 → Get Top 10 Elite
     """
     
-    # Limit tickers if not scanning all
-    scan_tickers = tickers[:stocks_to_scan] if stocks_to_scan < len(tickers) else tickers
-    
-    st.info(f"🔍 **STAGE 1**: Quick scan of {len(scan_tickers)} stocks to find Top {stage1_limit}...")
+    st.info(f"🔍 **STAGE 1**: Quick scan of {len(tickers)} stocks to find Top {stage1_limit}...")
     
     # STAGE 1: Fast scan with basic scoring
     stage1_results = []
     progress = st.progress(0)
     status = st.empty()
     
-    if use_parallel and len(scan_tickers) > 50:
+    if use_parallel and len(tickers) > 50:
         completed = 0
         with ThreadPoolExecutor(max_workers=10) as executor:
-            futures = {executor.submit(process_ticker, t, strategy, period): t for t in scan_tickers}
+            futures = {executor.submit(process_ticker, t, strategy, period): t for t in tickers}
             for future in as_completed(futures):
                 completed += 1
-                progress.progress(completed / len(scan_tickers))
-                status.text(f"📊 Stage 1: {completed}/{len(scan_tickers)} | Found: {len(stage1_results)}")
+                progress.progress(completed / len(tickers))
+                status.text(f"📊 Stage 1: {completed}/{len(tickers)} | Found: {len(stage1_results)}")
                 result = future.result()
                 if result and result['Score'] >= 50:  # Lower threshold for stage 1
                     stage1_results.append(result)
                 time.sleep(0.05)
     else:
-        for i, ticker in enumerate(scan_tickers):
-            progress.progress((i + 1) / len(scan_tickers))
-            status.text(f"📊 Stage 1: {i+1}/{len(scan_tickers)} | Found: {len(stage1_results)}")
+        for i, ticker in enumerate(tickers):
+            progress.progress((i + 1) / len(tickers))
+            status.text(f"📊 Stage 1: {i+1}/{len(tickers)} | Found: {len(stage1_results)}")
             result = process_ticker(ticker, strategy, period)
             if result and result['Score'] >= 50:
                 stage1_results.append(result)
@@ -554,14 +551,14 @@ def two_stage_scan(tickers, strategy, period, stocks_to_scan, stage1_limit=50, s
     if not stage1_results:
         return pd.DataFrame(), pd.DataFrame()
     
-    # Sort and get Top N
+    # Sort and get Top 50
     df_stage1 = pd.DataFrame(stage1_results).sort_values(
         ["Score", "Confidence"], ascending=[False, False]
     ).head(stage1_limit)
     
-    st.success(f"✅ Stage 1 Complete: Found {len(df_stage1)} candidates from {len(scan_tickers)} stocks")
+    st.success(f"✅ Stage 1 Complete: Found {len(df_stage1)} candidates from {len(tickers)} stocks")
     
-    # STAGE 2: Deep analysis on Top candidates
+    # STAGE 2: Deep analysis on Top 50
     st.info(f"🔬 **STAGE 2**: Deep analysis on Top {len(df_stage1)} → Selecting Top {stage2_limit} Elite...")
     
     # For stage 2, we already have the data, just apply stricter filters
@@ -614,23 +611,13 @@ with st.sidebar:
         period = st.selectbox("Period", ["3mo", "6mo", "1y"], index=1)
         
         st.markdown("### 🎯 2-Stage Filtering")
-        st.info(f"**Total Stocks Available:** {len(tickers)}")
+        st.info(f"**Total Stocks:** {len(tickers)}")
         
-        # Allow scanning ALL stocks or limiting
-        scan_all = st.checkbox("🔥 Scan ALL stocks", value=False)
+        stage1_limit = st.slider("Stage 1: Top N", 30, 100, 50, 5)
+        st.caption(f"Quick scan {len(tickers)} → Top {stage1_limit}")
         
-        if scan_all:
-            stocks_to_scan = len(tickers)
-            st.warning(f"⚠️ Will scan ALL {stocks_to_scan} stocks (may take 5-15 minutes)")
-        else:
-            stocks_to_scan = st.slider("Limit scan to", 50, min(500, len(tickers)), 200, 50)
-            st.caption(f"Scan first {stocks_to_scan} stocks only (faster)")
-        
-        stage1_limit = st.slider("Stage 1: Top N candidates", 30, 300, 100, 10)
-        st.caption(f"From {stocks_to_scan} stocks → Keep Top {stage1_limit}")
-        
-        stage2_limit = st.slider("Stage 2: Final Elite", 5, 50, 10, 5)
-        st.caption(f"From Top {stage1_limit} → Select {stage2_limit} Elite")
+        stage2_limit = st.slider("Stage 2: Elite", 5, 30, 10, 5)
+        st.caption(f"Deep filter {stage1_limit} → Top {stage2_limit}")
         
         use_parallel = st.checkbox("⚡ Parallel Scan", value=True)
         st.caption("Faster but uses more resources")
@@ -714,7 +701,7 @@ elif "BPJS" in menu:
     """)
     
     if st.button("🚀 Scan BPJS Setups", type="primary"):
-        df_stage1, df_stage2 = two_stage_scan(tickers, "BPJS", period, stocks_to_scan, stage1_limit, stage2_limit, use_parallel)
+        df_stage1, df_stage2 = two_stage_scan(tickers, "BPJS", period, stage1_limit, stage2_limit, use_parallel)
         
         if df_stage2.empty:
             st.warning("⚠️ No elite BPJS setups found")
@@ -768,7 +755,7 @@ elif "BSJP" in menu:
     """)
     
     if st.button("🚀 Scan BSJP Setups", type="primary"):
-        df_stage1, df_stage2 = two_stage_scan(tickers, "BSJP", period, stocks_to_scan, stage1_limit, stage2_limit, use_parallel)
+        df_stage1, df_stage2 = two_stage_scan(tickers, "BSJP", period, stage1_limit, stage2_limit, use_parallel)
         
         if df_stage2.empty:
             st.warning("⚠️ No elite BSJP setups found")
@@ -815,7 +802,7 @@ elif "Bandar" in menu:
     """)
     
     if st.button("🚀 Scan Bandar Accumulation", type="primary"):
-        df_stage1, df_stage2 = two_stage_scan(tickers, "Bandar", period, stocks_to_scan, stage1_limit, stage2_limit, use_parallel)
+        df_stage1, df_stage2 = two_stage_scan(tickers, "Bandar", period, stage1_limit, stage2_limit, use_parallel)
         
         if df_stage2.empty:
             st.warning("⚠️ No strong accumulation detected")
@@ -902,7 +889,7 @@ else:  # Elite Screener (General)
     """)
     
     if st.button("🚀 Run 2-Stage Elite Scan", type="primary"):
-        df_stage1, df_stage2 = two_stage_scan(tickers, "General", period, stocks_to_scan, stage1_limit, stage2_limit, use_parallel)
+        df_stage1, df_stage2 = two_stage_scan(tickers, "General", period, stage1_limit, stage2_limit, use_parallel)
         
         if df_stage2.empty:
             st.warning("⚠️ No elite setups found in Stage 2")
