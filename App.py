@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import os
 
-st.set_page_config(page_title="IDX Power Screener v4.0", page_icon="🎯", layout="wide")
+st.set_page_config(page_title="IDX Power Screener v4.1", page_icon="🎯", layout="wide")
 
 # ============= LOAD TICKERS =============
 def load_tickers():
@@ -105,10 +105,12 @@ def get_jakarta_time():
     return datetime.now(timezone(timedelta(hours=7)))
 
 def is_bpjs_time():
-    return 9 <= get_jakarta_time().hour < 10
+    jkt_hour = get_jakarta_time().hour
+    return 9 <= jkt_hour < 10
 
 def is_bsjp_time():
-    return 14 <= get_jakarta_time().hour < 16
+    jkt_hour = get_jakarta_time().hour
+    return 14 <= jkt_hour < 16
 
 # ============= FETCH DATA =============
 @st.cache_data(ttl=300, show_spinner=False)
@@ -130,30 +132,41 @@ def fetch_data(ticker, period="6mo"):
         q = result['indicators']['quote'][0]
         
         df = pd.DataFrame({
-            'Close':q['close'],'Volume':q['volume'],'High':q['high'],'Low':q['low']
+            'Open': q['open'],
+            'High': q['high'],
+            'Low': q['low'],
+            'Close': q['close'],
+            'Volume': q['volume']
         }, index=pd.to_datetime(result['timestamp'], unit='s'))
         
         df = df.dropna()
         if len(df) < 50:
             return None
         
-        df['EMA9'] = df['Close'].ewm(span=9).mean()
-        df['EMA21'] = df['Close'].ewm(span=21).mean()
-        df['EMA50'] = df['Close'].ewm(span=50).mean()
-        df['EMA200'] = df['Close'].ewm(span=200).mean() if len(df)>=200 else df['Close'].ewm(span=len(df)).mean()
+        # EMAs
+        df['EMA9'] = df['Close'].ewm(span=9, adjust=False).mean()
+        df['EMA21'] = df['Close'].ewm(span=21, adjust=False).mean()
+        df['EMA50'] = df['Close'].ewm(span=50, adjust=False).mean()
+        df['EMA200'] = df['Close'].ewm(span=200, adjust=False).mean() if len(df)>=200 else df['Close'].ewm(span=len(df), adjust=False).mean()
         
+        # RSI
         delta = df['Close'].diff()
         gain = delta.where(delta>0,0).rolling(14).mean()
         loss = -delta.where(delta<0,0).rolling(14).mean()
-        df['RSI'] = 100 - (100/(1+gain/loss))
+        rs = gain / loss.replace(0, np.nan)
+        df['RSI'] = 100 - (100/(1+rs))
         
-        df['VOL_SMA'] = df['Volume'].rolling(20).mean()
-        df['VOL_RATIO'] = df['Volume'] / df['VOL_SMA']
+        # Volume analysis
+        df['VOL_SMA20'] = df['Volume'].rolling(20).mean()
+        df['VOL_SMA50'] = df['Volume'].rolling(50).mean()
+        df['VOL_RATIO'] = df['Volume'] / df['VOL_SMA20']
         
+        # Momentum
         df['MOM_5D'] = ((df['Close'] - df['Close'].shift(5)) / df['Close'].shift(5)) * 100
+        df['MOM_10D'] = ((df['Close'] - df['Close'].shift(10)) / df['Close'].shift(10)) * 100
         df['MOM_20D'] = ((df['Close'] - df['Close'].shift(20)) / df['Close'].shift(20)) * 100
         
-        # OBV for Bandar
+        # OBV for Wyckoff
         obv = [0]
         for i in range(1, len(df)):
             if df['Close'].iloc[i] > df['Close'].iloc[i-1]:
@@ -163,161 +176,449 @@ def fetch_data(ticker, period="6mo"):
             else:
                 obv.append(obv[-1])
         df['OBV'] = obv
+        df['OBV_EMA'] = pd.Series(df['OBV']).ewm(span=10, adjust=False).mean()
         
-        # BB for BSJP
+        # Bollinger Bands
         df['BB_MID'] = df['Close'].rolling(20).mean()
         df['BB_STD'] = df['Close'].rolling(20).std()
+        df['BB_UPPER'] = df['BB_MID'] + 2*df['BB_STD']
         df['BB_LOWER'] = df['BB_MID'] - 2*df['BB_STD']
+        df['BB_WIDTH'] = ((df['BB_UPPER'] - df['BB_LOWER']) / df['BB_MID']) * 100
         
-        # Stoch for BPJS
+        # Stochastic
         low14 = df['Low'].rolling(14).min()
         high14 = df['High'].rolling(14).max()
         df['STOCH_K'] = 100*(df['Close']-low14)/(high14-low14)
+        df['STOCH_D'] = df['STOCH_K'].rolling(3).mean()
+        
+        # ATR for volatility
+        tr1 = df['High'] - df['Low']
+        tr2 = abs(df['High'] - df['Close'].shift())
+        tr3 = abs(df['Low'] - df['Close'].shift())
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        df['ATR'] = tr.rolling(14).mean()
+        df['ATR_PCT'] = (df['ATR'] / df['Close']) * 100
+        
+        # MACD
+        ema12 = df['Close'].ewm(span=12, adjust=False).mean()
+        ema26 = df['Close'].ewm(span=26, adjust=False).mean()
+        df['MACD'] = ema12 - ema26
+        df['MACD_SIGNAL'] = df['MACD'].ewm(span=9, adjust=False).mean()
+        df['MACD_HIST'] = df['MACD'] - df['MACD_SIGNAL']
         
         return df
-    except:
+    except Exception as e:
         return None
 
-# ============= SCORING =============
-def score_general(df):
+# ============= PRE-FILTERS =============
+def apply_liquidity_filter(df, ticker):
+    """Strict liquidity requirements"""
     try:
         r = df.iloc[-1]
-        if r['Close'] < r['EMA50'] and r['EMA50'] < r['EMA200']:
-            return 0, {"Rejected": "Downtrend"}, 0, "D"
+        price = r['Close']
+        vol_avg = df['Volume'].tail(20).mean()
         
+        # Minimum price (avoid penny stocks)
+        if price < 50:
+            return False, "Price too low"
+        
+        # Minimum average volume
+        if vol_avg < 500000:
+            return False, "Volume too low"
+        
+        # Minimum turnover (price * volume)
+        turnover = price * vol_avg
+        if turnover < 100_000_000:  # 100M IDR daily turnover
+            return False, "Turnover too low"
+        
+        return True, "Passed"
+    except:
+        return False, "Error"
+
+# ============= ENHANCED SCORING =============
+def score_general(df):
+    """STRICTER General Swing Trading Scoring"""
+    try:
+        r = df.iloc[-1]
         score = 0
         details = {}
+        rejection_reasons = []
         
-        if r['Close'] > r['EMA9'] > r['EMA21'] > r['EMA50'] > r['EMA200']:
+        # === CRITICAL FILTERS (AUTO-REJECT) ===
+        
+        # 1. Liquidity check
+        passed, reason = apply_liquidity_filter(df, "")
+        if not passed:
+            return 0, {"Rejected": reason}, 0, "F"
+        
+        # 2. Strong downtrend rejection (STRICTER)
+        if r['Close'] < r['EMA21'] < r['EMA50'] < r['EMA200']:
+            return 0, {"Rejected": "Strong downtrend"}, 0, "F"
+        
+        # 3. Weak positioning - below key EMAs
+        if r['Close'] < r['EMA50']:
+            return 0, {"Rejected": "Below EMA50"}, 0, "F"
+        
+        # === TREND STRENGTH (40 points max) ===
+        # Perfect bullish alignment: 9 > 21 > 50 > 200
+        ema_alignment = 0
+        if r['EMA9'] > r['EMA21']:
+            ema_alignment += 1
+        if r['EMA21'] > r['EMA50']:
+            ema_alignment += 1
+        if r['EMA50'] > r['EMA200']:
+            ema_alignment += 1
+        if r['Close'] > r['EMA9']:
+            ema_alignment += 1
+        
+        if ema_alignment == 4:
             score += 40
-            details['Trend'] = '🟢 Perfect uptrend'
-        elif r['Close'] > r['EMA9'] > r['EMA21']:
+            details['Trend'] = '🟢 Perfect alignment'
+        elif ema_alignment == 3:
             score += 25
-            details['Trend'] = '🟡 Short uptrend'
+            details['Trend'] = '🟡 Strong'
+        elif ema_alignment == 2:
+            score += 10
+            details['Trend'] = '🟠 Moderate'
+        else:
+            score += 0
+            details['Trend'] = '🔴 Weak'
         
-        if 45 <= r['RSI'] <= 60:
-            score += 30
-            details['RSI'] = f'🟢 Sweet {r["RSI"]:.0f}'
-        elif 40 <= r['RSI'] <= 70:
+        # === RSI (25 points max) ===
+        rsi = r['RSI']
+        if 50 <= rsi <= 65:
+            score += 25
+            details['RSI'] = f'🟢 Ideal {rsi:.0f}'
+        elif 45 <= rsi < 50:
+            score += 20
+            details['RSI'] = f'🟡 Good {rsi:.0f}'
+        elif 40 <= rsi < 45:
+            score += 10
+            details['RSI'] = f'🟠 OK {rsi:.0f}'
+        elif rsi > 70:
+            score += 0
+            details['RSI'] = f'🔴 Overbought {rsi:.0f}'
+        elif rsi < 35:
+            score += 0
+            details['RSI'] = f'🔴 Oversold {rsi:.0f}'
+        else:
+            score += 5
+            details['RSI'] = f'⚪ Neutral {rsi:.0f}'
+        
+        # === VOLUME (20 points max) ===
+        vol_ratio = r['VOL_RATIO']
+        if vol_ratio > 2.0:
+            score += 20
+            details['Volume'] = f'🟢 Surge {vol_ratio:.1f}x'
+        elif vol_ratio > 1.5:
             score += 15
-            details['RSI'] = f'🟡 OK {r["RSI"]:.0f}'
+            details['Volume'] = f'🟡 Strong {vol_ratio:.1f}x'
+        elif vol_ratio > 1.0:
+            score += 5
+            details['Volume'] = f'🟠 Normal {vol_ratio:.1f}x'
+        else:
+            score += 0
+            details['Volume'] = f'🔴 Weak {vol_ratio:.1f}x'
         
-        vol = df['VOL_RATIO'].tail(5).mean()
-        if vol > 1.5:
-            score += 30
-            details['Volume'] = f'🟢 Strong {vol:.1f}x'
-        elif vol > 1.0:
+        # === MOMENTUM (15 points max) ===
+        mom_20d = r['MOM_20D']
+        if mom_20d > 10:
             score += 15
-            details['Volume'] = f'🟡 Normal {vol:.1f}x'
+            details['Momentum'] = f'🟢 Strong +{mom_20d:.1f}%'
+        elif mom_20d > 5:
+            score += 10
+            details['Momentum'] = f'🟡 Good +{mom_20d:.1f}%'
+        elif mom_20d > 0:
+            score += 5
+            details['Momentum'] = f'🟠 Positive +{mom_20d:.1f}%'
+        else:
+            score += 0
+            details['Momentum'] = f'🔴 Negative {mom_20d:.1f}%'
         
-        grade = "A" if score >= 80 else "B" if score >= 60 else "C"
-        conf = min(score, 100)
+        # === GRADE CALCULATION ===
+        if score >= 85:
+            grade = "A+"
+            conf = 85
+        elif score >= 75:
+            grade = "A"
+            conf = 75
+        elif score >= 65:
+            grade = "B+"
+            conf = 65
+        elif score >= 55:
+            grade = "B"
+            conf = 55
+        elif score >= 45:
+            grade = "C"
+            conf = 45
+        else:
+            grade = "D"
+            conf = max(score, 0)
         
         return score, details, conf, grade
-    except:
-        return 0, {}, 0, "D"
+    except Exception as e:
+        return 0, {"Error": str(e)}, 0, "F"
 
 def score_bpjs(df):
+    """Enhanced BPJS (Day Trading) Scoring"""
     try:
         r = df.iloc[-1]
-        if r['Close'] < r['EMA50']:
-            return 0, {"Rejected": "Downtrend"}, 0, "D"
-        
         score = 0
         details = {}
         
-        vol_pct = ((df['High']-df['Low'])/df['Low']*100).tail(5).mean()
-        if 2 < vol_pct < 6:
-            score += 35
-            details['Volatility'] = f'🟢 IDEAL {vol_pct:.1f}%'
+        # Liquidity check
+        passed, reason = apply_liquidity_filter(df, "")
+        if not passed:
+            return 0, {"Rejected": reason}, 0, "F"
         
-        if r['VOL_RATIO'] > 2.5:
+        # Must be above EMA50 (trend confirmation)
+        if r['Close'] < r['EMA50']:
+            return 0, {"Rejected": "Below EMA50 - No uptrend"}, 0, "F"
+        
+        # === VOLATILITY (35 points) ===
+        atr_pct = r['ATR_PCT']
+        if 2.5 < atr_pct < 5:
             score += 35
+            details['Volatility'] = f'🟢 PERFECT {atr_pct:.1f}%'
+        elif 2 < atr_pct <= 2.5 or 5 <= atr_pct < 6:
+            score += 20
+            details['Volatility'] = f'🟡 Good {atr_pct:.1f}%'
+        elif atr_pct >= 6:
+            score += 0
+            details['Volatility'] = f'🔴 Too high {atr_pct:.1f}%'
+        else:
+            score += 0
+            details['Volatility'] = f'🔴 Too low {atr_pct:.1f}%'
+        
+        # === VOLUME SURGE (30 points) ===
+        if r['VOL_RATIO'] > 3.0:
+            score += 30
             details['Volume'] = f'🟢 HUGE {r["VOL_RATIO"]:.1f}x'
-        elif r['VOL_RATIO'] > 1.8:
+        elif r['VOL_RATIO'] > 2.0:
             score += 20
             details['Volume'] = f'🟡 Strong {r["VOL_RATIO"]:.1f}x'
+        elif r['VOL_RATIO'] > 1.5:
+            score += 10
+            details['Volume'] = f'🟠 Moderate {r["VOL_RATIO"]:.1f}x'
+        else:
+            return 0, {"Rejected": "Insufficient volume"}, 0, "F"
         
-        if 30 < r['RSI'] < 45:
-            score += 30
+        # === RSI OVERSOLD (20 points) ===
+        if 30 < r['RSI'] < 40:
+            score += 20
             details['RSI'] = f"🟢 Oversold {r['RSI']:.0f}"
+        elif 40 <= r['RSI'] < 50:
+            score += 10
+            details['RSI'] = f"🟡 OK {r['RSI']:.0f}"
+        else:
+            score += 0
+            details['RSI'] = f"🔴 Not oversold {r['RSI']:.0f}"
         
-        grade = "A" if score >= 80 else "B" if score >= 60 else "C"
-        conf = min(score, 100)
+        # === STOCHASTIC (15 points) ===
+        if r['STOCH_K'] < 30:
+            score += 15
+            details['Stoch'] = f"🟢 Oversold {r['STOCH_K']:.0f}"
+        elif r['STOCH_K'] < 50:
+            score += 5
+            details['Stoch'] = f"🟡 OK {r['STOCH_K']:.0f}"
+        
+        # === GRADING ===
+        if score >= 80:
+            grade = "A"
+            conf = 80
+        elif score >= 65:
+            grade = "B"
+            conf = 65
+        elif score >= 50:
+            grade = "C"
+            conf = 50
+        else:
+            grade = "D"
+            conf = max(score, 0)
         
         return score, details, conf, grade
     except:
-        return 0, {}, 0, "D"
+        return 0, {}, 0, "F"
 
 def score_bsjp(df):
+    """Enhanced BSJP (Overnight) Scoring"""
     try:
         r = df.iloc[-1]
-        if r['Close'] < r['EMA50']:
-            return 0, {"Rejected": "Downtrend"}, 0, "D"
-        
         score = 0
         details = {}
         
-        bb_pos = (r['Close']-r['BB_LOWER'])/(r['Close'])*100
-        if bb_pos < 3:
-            score += 35
-            details['BB'] = f'🟢 Extreme {bb_pos:.1f}%'
+        # Liquidity check
+        passed, reason = apply_liquidity_filter(df, "")
+        if not passed:
+            return 0, {"Rejected": reason}, 0, "F"
         
-        gap = (r['Close']-df['Close'].iloc[-2])/df['Close'].iloc[-2]*100
-        if -3 < gap < -0.5:
-            score += 35
-            details['Gap'] = f'🟢 Down {gap:.1f}%'
+        # Must have uptrend context
+        if r['Close'] < r['EMA50']:
+            return 0, {"Rejected": "No uptrend"}, 0, "F"
         
-        if 30 < r['RSI'] < 50:
+        # === BB POSITION (35 points) ===
+        bb_pos = ((r['Close'] - r['BB_LOWER']) / (r['BB_UPPER'] - r['BB_LOWER'])) * 100
+        if bb_pos < 20:
+            score += 35
+            details['BB'] = f'🟢 Near lower {bb_pos:.0f}%'
+        elif bb_pos < 35:
+            score += 20
+            details['BB'] = f'🟡 Below mid {bb_pos:.0f}%'
+        else:
+            score += 0
+            details['BB'] = f'🔴 Too high {bb_pos:.0f}%'
+        
+        # === GAP DOWN (30 points) ===
+        gap = ((r['Close'] - df['Close'].iloc[-2]) / df['Close'].iloc[-2]) * 100
+        if -4 < gap < -1:
             score += 30
-            details['RSI'] = f"🟢 Oversold {r['RSI']:.0f}"
+            details['Gap'] = f'🟢 Perfect {gap:.1f}%'
+        elif -1 <= gap < -0.3:
+            score += 15
+            details['Gap'] = f'🟡 Small {gap:.1f}%'
+        elif gap < -4:
+            score += 0
+            details['Gap'] = f'🔴 Too large {gap:.1f}%'
+        else:
+            score += 0
+            details['Gap'] = f'⚪ No gap {gap:.1f}%'
         
-        grade = "A" if score >= 80 else "B" if score >= 60 else "C"
-        conf = min(score, 100)
+        # === RSI (20 points) ===
+        if 25 < r['RSI'] < 40:
+            score += 20
+            details['RSI'] = f"🟢 Oversold {r['RSI']:.0f}"
+        elif 40 <= r['RSI'] < 50:
+            score += 10
+            details['RSI'] = f"🟡 OK {r['RSI']:.0f}"
+        
+        # === VOLUME (15 points) ===
+        if r['VOL_RATIO'] > 1.5:
+            score += 15
+            details['Volume'] = f"🟢 Strong {r['VOL_RATIO']:.1f}x"
+        elif r['VOL_RATIO'] > 1.0:
+            score += 5
+            details['Volume'] = f"🟡 Normal {r['VOL_RATIO']:.1f}x"
+        
+        # === GRADING ===
+        if score >= 80:
+            grade = "A"
+            conf = 80
+        elif score >= 65:
+            grade = "B"
+            conf = 65
+        elif score >= 50:
+            grade = "C"
+            conf = 50
+        else:
+            grade = "D"
+            conf = max(score, 0)
         
         return score, details, conf, grade
     except:
-        return 0, {}, 0, "D"
+        return 0, {}, 0, "F"
 
 def score_bandar(df):
+    """Enhanced Wyckoff Bandar Detection"""
     try:
         r = df.iloc[-1]
-        
-        vol_ratio = df['Volume'].tail(10).mean() / df['Volume'].rolling(30).mean().iloc[-1]
-        price_chg = (r['Close'] - df['Close'].iloc[-20]) / df['Close'].iloc[-20] * 100
-        obv_trend = (df['OBV'].iloc[-1] - df['OBV'].iloc[-20]) / abs(df['OBV'].iloc[-20]) if df['OBV'].iloc[-20] != 0 else 0
-        
+        score = 0
         details = {}
         
-        if vol_ratio > 1.4 and -3 < price_chg < 5 and obv_trend > 0.1:
-            phase = "🟢 AKUMULASI"
-            score = 95
-            conf = 90
-            details['Phase'] = 'Accumulation - BUY'
-        elif price_chg > 5 and obv_trend > 0.1:
+        # Liquidity check
+        passed, reason = apply_liquidity_filter(df, "")
+        if not passed:
+            return 0, {"Rejected": reason}, 0, "F"
+        
+        # === VOLUME ANALYSIS ===
+        vol_ratio_10d = df['Volume'].tail(10).mean() / df['VOL_SMA50'].iloc[-1]
+        vol_ratio_recent = df['Volume'].tail(3).mean() / df['VOL_SMA20'].iloc[-1]
+        
+        # === PRICE ACTION ===
+        price_chg_20d = ((r['Close'] - df['Close'].iloc[-20]) / df['Close'].iloc[-20]) * 100
+        price_chg_5d = ((r['Close'] - df['Close'].iloc[-5]) / df['Close'].iloc[-5]) * 100
+        
+        # === OBV TREND ===
+        obv_chg = ((df['OBV'].iloc[-1] - df['OBV'].iloc[-20]) / abs(df['OBV'].iloc[-20])) if df['OBV'].iloc[-20] != 0 else 0
+        obv_vs_ema = df['OBV'].iloc[-1] > df['OBV_EMA'].iloc[-1]
+        
+        # === WYCKOFF PHASE DETECTION ===
+        
+        # PHASE 1: ACCUMULATION (Best for entry)
+        if (vol_ratio_10d > 1.3 and  # Elevated volume
+            -2 < price_chg_20d < 5 and  # Sideways/slight up
+            obv_chg > 0.05 and  # OBV rising
+            obv_vs_ema and  # OBV above its EMA
+            r['Close'] > r['EMA50']):  # Above trend
+            
+            phase = "🟢 ACCUMULATION"
+            score = 90
+            conf = 85
+            details['Phase'] = 'Accumulation Zone'
+            details['Signal'] = 'STRONG BUY'
+            details['Action'] = 'Enter position'
+        
+        # PHASE 2: MARKUP (Hold/Trail)
+        elif (price_chg_20d > 8 and  # Strong uptrend
+              obv_chg > 0.1 and  # OBV strongly rising
+              r['Close'] > r['EMA9'] > r['EMA21']):  # Uptrend confirmed
+            
             phase = "🚀 MARKUP"
-            score = 80
-            conf = 75
-            details['Phase'] = 'Markup - HOLD'
-        elif vol_ratio > 1.5 and price_chg < -3:
-            phase = "🔴 DISTRIBUSI"
+            score = 75
+            conf = 70
+            details['Phase'] = 'Markup Phase'
+            details['Signal'] = 'HOLD/TRAIL'
+            details['Action'] = 'Trail stop'
+        
+        # PHASE 3: DISTRIBUTION (Exit)
+        elif (vol_ratio_recent > 2.0 and  # Volume spike
+              price_chg_5d < -2 and  # Recent decline
+              (r['RSI'] > 70 or price_chg_20d > 15)):  # Overbought or extended
+            
+            phase = "🔴 DISTRIBUTION"
+            score = 20
+            conf = 25
+            details['Phase'] = 'Distribution Zone'
+            details['Signal'] = 'SELL/AVOID'
+            details['Action'] = 'Exit now'
+        
+        # PHASE 4: MARKDOWN (Avoid)
+        elif (r['Close'] < r['EMA50'] and
+              obv_chg < -0.1):
+            
+            phase = "⚫ MARKDOWN"
             score = 10
             conf = 15
-            details['Phase'] = 'Distribution - AVOID'
+            details['Phase'] = 'Markdown Phase'
+            details['Signal'] = 'AVOID'
+            details['Action'] = 'Stay away'
+        
+        # PHASE 5: RANGING/UNCERTAIN
         else:
-            phase = "⚪ SIDEWAYS"
-            score = 50
-            conf = 50
-            details['Phase'] = 'Ranging - WAIT'
+            phase = "⚪ RANGING"
+            score = 45
+            conf = 40
+            details['Phase'] = 'No clear phase'
+            details['Signal'] = 'WAIT'
+            details['Action'] = 'Monitor'
         
-        details['Volume'] = f'{vol_ratio:.1f}x'
-        details['Price'] = f'{price_chg:+.1f}%'
+        # Add metrics
+        details['Vol_10D'] = f'{vol_ratio_10d:.1f}x'
+        details['Price_20D'] = f'{price_chg_20d:+.1f}%'
+        details['OBV_Trend'] = f'{obv_chg*100:+.1f}%'
         
-        grade = "A" if score >= 80 else "B" if score >= 60 else "C"
+        # === GRADING ===
+        if score >= 80:
+            grade = "A"
+        elif score >= 60:
+            grade = "B"
+        elif score >= 40:
+            grade = "C"
+        else:
+            grade = "D"
         
         return score, details, conf, grade
-    except:
-        return 0, {}, 0, "D"
+    except Exception as e:
+        return 0, {"Error": str(e)}, 0, "F"
 
 # ============= PROCESS =============
 def process_ticker(ticker, strategy, period):
@@ -328,6 +629,7 @@ def process_ticker(ticker, strategy, period):
         
         price = float(df['Close'].iloc[-1])
         
+        # Apply strategy scoring
         if strategy == "BPJS":
             score, details, conf, grade = score_bpjs(df)
         elif strategy == "BSJP":
@@ -337,11 +639,14 @@ def process_ticker(ticker, strategy, period):
         else:
             score, details, conf, grade = score_general(df)
         
-        if score < 50:
+        # Stricter filter: only keep grade A, B, C+
+        if grade not in ['A+', 'A', 'B+', 'B', 'C']:
             return None
         
-        entry = round(price * 0.98, 0)
+        # Calculate levels
+        entry = round(price * 0.99, 0)
         tp1 = round(entry * 1.08, 0)
+        tp2 = round(entry * 1.15, 0)
         sl = round(entry * 0.94, 0)
         
         return {
@@ -352,6 +657,7 @@ def process_ticker(ticker, strategy, period):
             "Grade": grade,
             "Entry": entry,
             "TP1": tp1,
+            "TP2": tp2,
             "SL": sl,
             "Details": details
         }
@@ -386,17 +692,19 @@ def scan_stocks(tickers, strategy, period, limit1, limit2):
     if not results:
         return pd.DataFrame(), pd.DataFrame()
     
+    # Stage 1: Top N by score
     df1 = pd.DataFrame(results).sort_values("Score", ascending=False).head(limit1)
-    st.success(f"✅ Stage 1: Found {len(df1)} candidates")
+    st.success(f"✅ Stage 1: Found {len(df1)} candidates (Avg score: {df1['Score'].mean():.0f})")
     
-    df2 = df1[df1['Grade'].isin(['A','B'])].head(limit2)
-    st.success(f"🏆 Stage 2: {len(df2)} elite picks!")
+    # Stage 2: Only A and B grades
+    df2 = df1[df1['Grade'].isin(['A+','A','B+','B'])].head(limit2)
+    st.success(f"🏆 Stage 2: {len(df2)} elite picks (Avg conf: {df2['Confidence'].mean():.0f}%)")
     
     return df1, df2
 
 # ============= UI =============
-st.title("🎯 IDX Power Screener v4.0")
-st.caption("2-Stage Filter: Scan All → Top 50 → Top 10 Elite")
+st.title("🎯 IDX Power Screener v4.1 PRO")
+st.caption("Enhanced 2-Stage Filter with Strict Scoring | Scan All → Top 50 → Top 10 Elite")
 
 tickers = load_tickers()
 
@@ -427,6 +735,9 @@ with st.sidebar:
         limit2 = st.slider("Stage 2: Elite", 5, 30, 10, 5)
         
         st.caption(f"Scan {len(tickers)} → Top {limit1} → Elite {limit2}")
+    
+    st.markdown("---")
+    st.caption("v4.1 PRO - Enhanced Scoring")
 
 # ============= MENU HANDLERS =============
 
@@ -442,10 +753,10 @@ if "Single Stock" in menu:
         result = process_ticker(ticker_full, strategy_single, period)
         
         if result is None:
-            st.error("❌ Analysis failed or stock rejected")
+            st.error("❌ Analysis failed or stock rejected by filters")
         else:
             st.markdown(f"## {result['Ticker']}")
-            st.markdown(f"**Grade {result['Grade']}**")
+            st.markdown(f"### Grade: **{result['Grade']}**")
             
             col1, col2, col3 = st.columns(3)
             col1.metric("Price", f"Rp {result['Price']:,.0f}")
@@ -453,63 +764,68 @@ if "Single Stock" in menu:
             col3.metric("Confidence", f"{result['Confidence']}%")
             
             st.success(f"""
-            **Entry:** Rp {result['Entry']:,.0f}
+            **Entry Zone:** Rp {result['Entry']:,.0f}
             **TP1 (+8%):** Rp {result['TP1']:,.0f}
-            **SL (-6%):** Rp {result['SL']:,.0f}
+            **TP2 (+15%):** Rp {result['TP2']:,.0f}
+            **Stop Loss (-6%):** Rp {result['SL']:,.0f}
             """)
             
-            st.markdown("**Analysis:**")
+            st.markdown("**Technical Analysis:**")
             for k, v in result['Details'].items():
-                st.caption(f"• {k}: {v}")
+                st.caption(f"• **{k}**: {v}")
 
 elif "BPJS" in menu:
     st.markdown("### ⚡ BPJS - Beli Pagi Jual Sore")
     
     if is_bpjs_time():
-        st.success("✅ OPTIMAL TIME! (09:00-09:30 WIB)")
+        st.success("✅ OPTIMAL TIME! (09:00-10:00 WIB)")
     else:
-        st.warning("⏰ Best time: 09:00-09:30 WIB tomorrow")
+        st.warning("⏰ Best time: 09:00-10:00 WIB")
     
     st.info("""
     **Strategy:**
-    - Entry: 09:00-09:30 WIB
-    - Exit: Same day 14:00-15:30
-    - Target: 2-5% intraday
-    - Focus: High volatility oversold stocks
+    - Entry: 09:00-09:30 WIB (first 30 min)
+    - Exit: Same day 14:30-15:15
+    - Target: 3-5% intraday
+    - Focus: Oversold stocks with volume surge
+    - Risk: High volatility, fast execution needed
     """)
     
     if st.button("🚀 SCAN BPJS", type="primary"):
         df1, df2 = scan_stocks(tickers, "BPJS", period, limit1, limit2)
         
         if df2.empty:
-            st.warning("⚠️ No BPJS setups found")
+            st.warning("⚠️ No A/B grade BPJS setups found today")
             if not df1.empty:
-                st.info(f"Stage 1 found {len(df1)} candidates")
-                st.dataframe(df1)
+                with st.expander(f"📊 Stage 1: {len(df1)} Lower-Grade Candidates"):
+                    st.dataframe(df1, use_container_width=True)
         else:
             st.markdown(f"### 🏆 TOP {len(df2)} BPJS PICKS")
             
-            for _, row in df2.iterrows():
-                emoji = "⚡" if row['Grade']=='A' else "🔸"
+            for idx, row in df2.iterrows():
+                emoji = "⚡" if row['Grade'] in ['A+','A'] else "🔸"
                 
-                with st.expander(f"{emoji} {row['Ticker']} | Grade {row['Grade']} | Score: {row['Score']}", expanded=True):
-                    col1, col2, col3 = st.columns(3)
+                with st.expander(f"{emoji} **{row['Ticker']}** | Grade **{row['Grade']}** | Score: {row['Score']}/100", expanded=True):
+                    col1, col2, col3, col4 = st.columns(4)
                     col1.metric("Price", f"Rp {row['Price']:,.0f}")
-                    col2.metric("Score", f"{row['Score']}/100")
+                    col2.metric("Score", f"{row['Score']}")
                     col3.metric("Confidence", f"{row['Confidence']}%")
+                    col4.metric("Grade", row['Grade'])
                     
                     st.success(f"""
-                    **BUY NOW:** Rp {row['Price']:,.0f}
-                    **Target:** Rp {row['TP1']:,.0f} (+8%)
-                    **Stop Loss:** Rp {row['SL']:,.0f} (-6%)
-                    **EXIT by 15:00 WIB!**
+                    **🎯 BUY NOW:** Rp {row['Price']:,.0f} - {row['Entry']:,.0f}
+                    **💰 Target:** Rp {row['TP1']:,.0f} (+8%)
+                    **🛑 Stop Loss:** Rp {row['SL']:,.0f} (-6%)
+                    **⏰ EXIT by 15:00 WIB LATEST!**
                     """)
                     
+                    st.markdown("**Analysis:**")
                     for k, v in row['Details'].items():
-                        st.caption(f"• {k}: {v}")
+                        st.caption(f"• **{k}**: {v}")
             
-            with st.expander(f"📊 Stage 1: {len(df1)} Candidates"):
-                st.dataframe(df1)
+            if not df1.empty:
+                with st.expander(f"📊 Stage 1: All {len(df1)} Candidates"):
+                    st.dataframe(df1, use_container_width=True)
 
 elif "BSJP" in menu:
     st.markdown("### 🌙 BSJP - Beli Sore Jual Pagi")
@@ -521,169 +837,197 @@ elif "BSJP" in menu:
     
     st.info("""
     **Strategy:**
-    - Entry: 14:00-15:30 WIB (gap down stocks)
+    - Entry: 14:00-15:20 WIB (gap down stocks)
     - Exit: Next morning 09:30-10:30
-    - Target: 2-4% gap recovery
-    - Focus: Oversold near BB lower band
+    - Target: 3-5% gap recovery
+    - Focus: Oversold at BB lower, gap down
+    - Risk: Overnight holding risk
     """)
     
     if st.button("🚀 SCAN BSJP", type="primary"):
         df1, df2 = scan_stocks(tickers, "BSJP", period, limit1, limit2)
         
         if df2.empty:
-            st.warning("⚠️ No BSJP setups found")
+            st.warning("⚠️ No A/B grade BSJP setups found")
             if not df1.empty:
-                st.info(f"Stage 1 found {len(df1)} candidates")
-                st.dataframe(df1)
+                with st.expander(f"📊 Stage 1: {len(df1)} Lower-Grade Candidates"):
+                    st.dataframe(df1, use_container_width=True)
         else:
             st.markdown(f"### 🏆 TOP {len(df2)} BSJP PICKS")
             
-            for _, row in df2.iterrows():
-                emoji = "🌙" if row['Grade']=='A' else "🔸"
+            for idx, row in df2.iterrows():
+                emoji = "🌙" if row['Grade'] in ['A+','A'] else "🔸"
                 
-                with st.expander(f"{emoji} {row['Ticker']} | Grade {row['Grade']} | Score: {row['Score']}", expanded=True):
-                    col1, col2, col3 = st.columns(3)
+                with st.expander(f"{emoji} **{row['Ticker']}** | Grade **{row['Grade']}** | Score: {row['Score']}/100", expanded=True):
+                    col1, col2, col3, col4 = st.columns(4)
                     col1.metric("Price", f"Rp {row['Price']:,.0f}")
-                    col2.metric("Score", f"{row['Score']}/100")
+                    col2.metric("Score", f"{row['Score']}")
                     col3.metric("Confidence", f"{row['Confidence']}%")
+                    col4.metric("Grade", row['Grade'])
                     
                     st.success(f"""
-                    **BUY before close:** Rp {row['Price']:,.0f}
-                    **Target:** Rp {row['TP1']:,.0f} (+8%)
-                    **Stop Loss:** Rp {row['SL']:,.0f} (-6%)
-                    **SELL tomorrow 09:30-10:30!**
+                    **🎯 BUY before close:** Rp {row['Price']:,.0f} - {row['Entry']:,.0f}
+                    **💰 Target:** Rp {row['TP1']:,.0f} (+8%)
+                    **🛑 Stop Loss:** Rp {row['SL']:,.0f} (-6%)
+                    **⏰ SELL tomorrow 09:30-10:30!**
                     """)
                     
+                    st.markdown("**Analysis:**")
                     for k, v in row['Details'].items():
-                        st.caption(f"• {k}: {v}")
+                        st.caption(f"• **{k}**: {v}")
             
-            with st.expander(f"📊 Stage 1: {len(df1)} Candidates"):
-                st.dataframe(df1)
+            if not df1.empty:
+                with st.expander(f"📊 Stage 1: All {len(df1)} Candidates"):
+                    st.dataframe(df1, use_container_width=True)
 
 elif "Bandar" in menu:
-    st.markdown("### 🔮 Bandar Tracking - Smart Money")
+    st.markdown("### 🔮 Bandar Tracking - Wyckoff Smart Money")
     
     st.info("""
-    **Strategy:**
-    - Detect: Wyckoff accumulation phases
-    - 🟢 AKUMULASI = BUY (best entry)
-    - 🚀 MARKUP = HOLD (let it run)
-    - 🔴 DISTRIBUSI = AVOID (exit)
-    - Timeline: Weeks to months
+    **Wyckoff Methodology:**
+    - 🟢 **ACCUMULATION** = BUY (Smart money loading)
+    - 🚀 **MARKUP** = HOLD (Uptrend active)
+    - 🔴 **DISTRIBUTION** = SELL (Smart money exiting)
+    - ⚫ **MARKDOWN** = AVOID (Downtrend)
+    - ⚪ **RANGING** = WAIT (No clear phase)
+    
+    Timeline: Weeks to months (swing/position trading)
     """)
     
     if st.button("🚀 SCAN BANDAR", type="primary"):
         df1, df2 = scan_stocks(tickers, "Bandar", period, limit1, limit2)
         
         if df2.empty:
-            st.warning("⚠️ No strong accumulation detected")
+            st.warning("⚠️ No strong A/B grade accumulation signals")
             if not df1.empty:
-                st.info(f"Stage 1 found {len(df1)} candidates")
-                st.dataframe(df1)
+                with st.expander(f"📊 Stage 1: {len(df1)} Weaker Signals"):
+                    st.dataframe(df1, use_container_width=True)
         else:
-            st.markdown(f"### 🏆 TOP {len(df2)} BANDAR SIGNALS")
+            st.markdown(f"### 🏆 TOP {len(df2)} WYCKOFF SIGNALS")
             
-            for _, row in df2.iterrows():
+            for idx, row in df2.iterrows():
                 phase = row['Details'].get('Phase', '')
+                signal = row['Details'].get('Signal', '')
                 
-                if "AKUMULASI" in phase or "Accumulation" in phase:
+                if "Accumulation" in phase:
                     emoji = "🟢"
-                    color = "success"
-                elif "MARKUP" in phase or "Markup" in phase:
+                    expanded = True
+                elif "Markup" in phase:
                     emoji = "🚀"
-                    color = "info"
+                    expanded = True
+                elif "Distribution" in phase:
+                    emoji = "🔴"
+                    expanded = False
                 else:
                     emoji = "⚪"
-                    color = "warning"
+                    expanded = False
                 
-                with st.expander(f"{emoji} {row['Ticker']} | {phase} | Score: {row['Score']}", expanded=True):
-                    col1, col2, col3 = st.columns(3)
+                with st.expander(f"{emoji} **{row['Ticker']}** | {phase} | **{signal}** | Score: {row['Score']}", expanded=expanded):
+                    col1, col2, col3, col4 = st.columns(4)
                     col1.metric("Price", f"Rp {row['Price']:,.0f}")
-                    col2.metric("Score", f"{row['Score']}/100")
+                    col2.metric("Score", f"{row['Score']}")
                     col3.metric("Grade", row['Grade'])
+                    col4.metric("Confidence", f"{row['Confidence']}%")
                     
-                    if "AKUMULASI" in phase or "Accumulation" in phase:
+                    if "Accumulation" in phase:
                         st.success(f"""
                         🟢 **SMART MONEY ACCUMULATING!**
                         
-                        **Entry:** Rp {row['Entry']:,.0f}
-                        **TP1:** Rp {row['TP1']:,.0f} (+8%)
-                        **TP2:** Rp {int(row['TP1']*1.065):,.0f} (+15%)
-                        **SL:** Rp {row['SL']:,.0f} (-6%)
+                        **Entry Zone:** Rp {row['Entry']:,.0f}
+                        **TP1 (Sell 1/3):** Rp {row['TP1']:,.0f} (+8%)
+                        **TP2 (Sell 1/3):** Rp {row['TP2']:,.0f} (+15%)
+                        **Trail last 1/3 with 20 EMA**
+                        **Stop Loss:** Rp {row['SL']:,.0f} (-6%)
                         
-                        💎 Best phase for entry!
+                        💎 **Best phase for entry - HIGH PROBABILITY**
                         """)
-                    elif "MARKUP" in phase:
+                    elif "Markup" in phase:
                         st.info(f"""
-                        🚀 **UPTREND ACTIVE**
+                        🚀 **UPTREND ACTIVE - Already moving**
                         
-                        Already in markup phase
-                        Hold with trailing stop
+                        If you're in: Hold and trail stop
+                        If not: Wait for pullback or next accumulation
+                        """)
+                    elif "Distribution" in phase:
+                        st.error(f"""
+                        🔴 **DANGER ZONE - Smart money exiting**
+                        
+                        **ACTION:** Sell if you're holding
+                        **DO NOT:** Enter new positions
                         """)
                     else:
                         st.warning(f"""
                         ⚪ **NO CLEAR DIRECTION**
                         
-                        Wait for better setup
+                        Wait for accumulation phase to develop
+                        Monitor for Wyckoff spring or upthrust
                         """)
                     
                     st.markdown("**Wyckoff Analysis:**")
                     for k, v in row['Details'].items():
-                        st.caption(f"• {k}: {v}")
+                        st.caption(f"• **{k}**: {v}")
             
-            with st.expander(f"📊 Stage 1: {len(df1)} Candidates"):
-                st.dataframe(df1)
+            if not df1.empty:
+                with st.expander(f"📊 Stage 1: All {len(df1)} Candidates"):
+                    st.dataframe(df1, use_container_width=True)
 
 else:  # Elite Screener
-    st.markdown("### 🎯 Elite Screener - General Swing")
+    st.markdown("### 🎯 Elite Screener - General Swing Trading")
     
     st.info("""
-    **Strategy:**
-    - Multi-factor technical analysis
-    - Timeline: 2-5 days swing trades
-    - Focus: Strong trend + momentum + volume
+    **Multi-Factor Strategy:**
+    - Trend: EMA alignment (9>21>50>200)
+    - Momentum: RSI sweet spot (50-65)
+    - Volume: Above average confirmation
+    - Timeline: 2-7 days swing trades
+    - Position: 3-lot strategy (TP1, TP2, Trail)
     """)
     
-    if st.button("🚀 START SCAN", type="primary"):
+    if st.button("🚀 START ELITE SCAN", type="primary"):
         df1, df2 = scan_stocks(tickers, "General", period, limit1, limit2)
         
         if df2.empty:
-            st.warning("⚠️ No elite stocks found")
+            st.warning("⚠️ No A/B grade elite stocks found")
             if not df1.empty:
-                st.info(f"Stage 1 found {len(df1)} candidates")
-                st.dataframe(df1)
+                with st.expander(f"📊 Stage 1: {len(df1)} Lower-Grade Candidates"):
+                    st.dataframe(df1, use_container_width=True)
         else:
             st.markdown(f"### 🏆 TOP {len(df2)} ELITE PICKS")
             
             col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Elite", len(df2))
-            col2.metric("Avg Score", f"{df2['Score'].mean():.0f}")
-            col3.metric("Avg Conf", f"{df2['Confidence'].mean():.0f}%")
-            col4.metric("Grade A", len(df2[df2['Grade']=='A']))
+            col1.metric("Elite Picks", len(df2))
+            col2.metric("Avg Score", f"{df2['Score'].mean():.0f}/100")
+            col3.metric("Avg Confidence", f"{df2['Confidence'].mean():.0f}%")
+            col4.metric("Grade A+/A", len(df2[df2['Grade'].isin(['A+','A'])]))
             
-            for _, row in df2.iterrows():
-                emoji = "💎" if row['Grade']=='A' else "🔹" if row['Grade']=='B' else "⚪"
+            for idx, row in df2.iterrows():
+                emoji = "💎" if row['Grade'] in ['A+','A'] else "🔹"
                 
-                with st.expander(f"{emoji} {row['Ticker']} | Grade {row['Grade']} | Score: {row['Score']}", expanded=True):
-                    col1, col2, col3 = st.columns(3)
+                with st.expander(f"{emoji} **{row['Ticker']}** | Grade **{row['Grade']}** | Score: {row['Score']}/100", expanded=True):
+                    col1, col2, col3, col4 = st.columns(4)
                     col1.metric("Price", f"Rp {row['Price']:,.0f}")
-                    col2.metric("Score", f"{row['Score']}/100")
+                    col2.metric("Score", f"{row['Score']}")
                     col3.metric("Confidence", f"{row['Confidence']}%")
+                    col4.metric("Grade", row['Grade'])
                     
                     st.success(f"""
-                    **Entry:** Rp {row['Entry']:,.0f}
-                    **TP1 (Sell 1/3):** Rp {row['TP1']:,.0f} (+8%)
-                    **TP2 (Sell 1/3):** Rp {int(row['TP1']*1.065):,.0f} (+15%)
-                    **Trail last 1/3 with 20 EMA**
-                    **Stop Loss:** Rp {row['SL']:,.0f} (-6%)
+                    **🎯 Entry Zone:** Rp {row['Entry']:,.0f}
+                    
+                    **3-Lot Position Management:**
+                    - **Lot 1 (1/3):** Sell at Rp {row['TP1']:,.0f} (+8%)
+                    - **Lot 2 (1/3):** Sell at Rp {row['TP2']:,.0f} (+15%)
+                    - **Lot 3 (1/3):** Trail with 20 EMA
+                    
+                    **🛑 Stop Loss:** Rp {row['SL']:,.0f} (-6%)
                     """)
                     
-                    st.markdown("**Analysis:**")
+                    st.markdown("**Technical Analysis:**")
                     for k, v in row['Details'].items():
-                        st.caption(f"• {k}: {v}")
+                        st.caption(f"• **{k}**: {v}")
             
-            with st.expander(f"📊 Stage 1: All {len(df1)} Candidates"):
-                st.dataframe(df1, use_container_width=True)
+            if not df1.empty:
+                with st.expander(f"📊 Stage 1: All {len(df1)} Candidates"):
+                    st.dataframe(df1, use_container_width=True)
 
 st.markdown("---")
-st.caption("🎯 IDX Power Screener v4.0 | Educational purposes only")
+st.caption("🎯 IDX Power Screener v4.1 PRO | Enhanced Scoring & Filters | Educational purposes only")
