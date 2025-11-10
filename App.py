@@ -11,7 +11,7 @@ import os
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-st.set_page_config(page_title="IDX Power Screener v4.3 SPEED", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="IDX Power Screener v4.4 COMPLETE", page_icon="🎯", layout="wide")
 
 # ============= LOAD TICKERS =============
 def load_tickers():
@@ -750,6 +750,199 @@ def score_bandar(df):
     except Exception as e:
         return 0, {"Error": str(e)}, 0, "F"
 
+def score_swing(df):
+    """Swing Trader Scoring (3-5 days holding)"""
+    try:
+        r = df.iloc[-1]
+        score = 0
+        details = {}
+        
+        # Liquidity check
+        passed, reason = apply_liquidity_filter(df, "")
+        if not passed:
+            return 0, {"Rejected": reason}, 0, "F"
+        
+        # Must be in uptrend
+        if r['Close'] < r['EMA50']:
+            return 0, {"Rejected": "Below EMA50"}, 0, "F"
+        
+        # MANDATORY: Momentum must be positive
+        mom_10d = r['MOM_10D']
+        mom_20d = r['MOM_20D']
+        if mom_20d < -5:
+            return 0, {"Rejected": f"Negative momentum ({mom_20d:.1f}%)"}, 0, "F"
+        
+        # Volume check
+        if r['VOL_RATIO'] < 1.0:
+            return 0, {"Rejected": f"Weak volume ({r['VOL_RATIO']:.1f}x)"}, 0, "F"
+        
+        # === TREND (35 points) ===
+        ema_alignment = 0
+        if r['EMA9'] > r['EMA21']: ema_alignment += 1
+        if r['EMA21'] > r['EMA50']: ema_alignment += 1
+        if r['EMA50'] > r['EMA200']: ema_alignment += 1
+        if r['Close'] > r['EMA9']: ema_alignment += 1
+        
+        if ema_alignment == 4:
+            score += 35
+            details['Trend'] = '🟢 Perfect alignment'
+        elif ema_alignment == 3:
+            score += 25
+            details['Trend'] = '🟡 Strong'
+        else:
+            score += 10
+            details['Trend'] = '🟠 Moderate'
+        
+        # === RSI (25 points) ===
+        rsi = r['RSI']
+        if 45 <= rsi <= 65:
+            score += 25
+            details['RSI'] = f'🟢 Ideal {rsi:.0f}'
+        elif 40 <= rsi < 45 or 65 < rsi <= 70:
+            score += 15
+            details['RSI'] = f'🟡 OK {rsi:.0f}'
+        else:
+            score += 5
+            details['RSI'] = f'🟠 Acceptable {rsi:.0f}'
+        
+        # === VOLUME (20 points) ===
+        vol = r['VOL_RATIO']
+        if vol > 1.8:
+            score += 20
+            details['Volume'] = f'🟢 Strong {vol:.1f}x'
+        elif vol > 1.3:
+            score += 15
+            details['Volume'] = f'🟡 Good {vol:.1f}x'
+        else:
+            score += 5
+            details['Volume'] = f'🟠 Normal {vol:.1f}x'
+        
+        # === MOMENTUM (20 points) - Focus on 10D + 20D ===
+        if mom_10d > 5 and mom_20d > 8:
+            score += 20
+            details['Momentum'] = f'🟢 Strong 10D:{mom_10d:.1f}% 20D:{mom_20d:.1f}%'
+        elif mom_10d > 2 and mom_20d > 4:
+            score += 15
+            details['Momentum'] = f'🟡 Good 10D:{mom_10d:.1f}% 20D:{mom_20d:.1f}%'
+        elif mom_10d > 0 and mom_20d > 0:
+            score += 8
+            details['Momentum'] = f'🟠 Positive 10D:{mom_10d:.1f}% 20D:{mom_20d:.1f}%'
+        
+        # === GRADING ===
+        if score >= 85:
+            grade, conf = "A+", 85
+        elif score >= 75:
+            grade, conf = "A", 75
+        elif score >= 65:
+            grade, conf = "B+", 65
+        elif score >= 55:
+            grade, conf = "B", 55
+        else:
+            grade, conf = "C", max(score, 0)
+        
+        return score, details, conf, grade
+    except:
+        return 0, {}, 0, "F"
+
+def score_value(df):
+    """Value Plays Scoring (Undervalued stocks with potential)"""
+    try:
+        r = df.iloc[-1]
+        price = r['Close']
+        score = 0
+        details = {}
+        
+        # === VALUE CRITERIA ===
+        
+        # 1. MUST be affordable (under 1000)
+        if price >= 1000:
+            return 0, {"Rejected": "Price too high (not undervalued)"}, 0, "F"
+        
+        # 2. Liquidity check (but more lenient)
+        vol_avg = df['Volume'].tail(20).mean()
+        if vol_avg < 300000:  # Lower than general filter
+            return 0, {"Rejected": "Volume too low"}, 0, "F"
+        
+        # 3. Must have SOME uptrend context (not in strong downtrend)
+        if r['Close'] < r['EMA200']:
+            return 0, {"Rejected": "Below 200 EMA"}, 0, "F"
+        
+        # === UNDERVALUED SIGNALS (40 points) ===
+        undervalued_score = 0
+        
+        # Near support (EMA50 or BB lower)
+        dist_to_ema50 = ((r['Close'] - r['EMA50']) / r['EMA50']) * 100
+        bb_position = ((r['Close'] - r['BB_LOWER']) / (r['BB_UPPER'] - r['BB_LOWER'])) * 100
+        
+        if -5 < dist_to_ema50 < 3:
+            undervalued_score += 20
+            details['Support'] = f'🟢 Near EMA50 ({dist_to_ema50:+.1f}%)'
+        elif bb_position < 25:
+            undervalued_score += 20
+            details['Support'] = f'🟢 Near BB lower ({bb_position:.0f}%)'
+        elif -10 < dist_to_ema50 < 5:
+            undervalued_score += 10
+            details['Support'] = f'🟡 Approaching EMA50'
+        
+        # Oversold RSI
+        rsi = r['RSI']
+        if rsi < 35:
+            undervalued_score += 20
+            details['RSI'] = f'🟢 Oversold {rsi:.0f}'
+        elif rsi < 45:
+            undervalued_score += 10
+            details['RSI'] = f'🟡 Low {rsi:.0f}'
+        
+        score += undervalued_score
+        
+        # === REVERSAL SIGNS (35 points) ===
+        reversal_score = 0
+        
+        # Volume increasing (accumulation)
+        vol_trend = df['Volume'].tail(5).mean() / df['VOL_SMA20'].iloc[-1]
+        if vol_trend > 1.3:
+            reversal_score += 20
+            details['Volume'] = f'🟢 Increasing {vol_trend:.1f}x'
+        elif vol_trend > 1.0:
+            reversal_score += 10
+            details['Volume'] = f'🟡 Normal {vol_trend:.1f}x'
+        
+        # Recent green candles (bottoming)
+        green_candles = sum(1 for i in range(-5, 0) if df['Close'].iloc[i] > df['Open'].iloc[i])
+        if green_candles >= 3:
+            reversal_score += 15
+            details['Pattern'] = f'🟢 {green_candles}/5 green candles'
+        elif green_candles >= 2:
+            reversal_score += 8
+            details['Pattern'] = f'🟡 {green_candles}/5 green candles'
+        
+        score += reversal_score
+        
+        # === AFFORDABILITY BONUS (25 points) ===
+        if price < 500:
+            score += 25
+            details['Price'] = f'🟢 Very affordable Rp {price:.0f}'
+        elif price < 750:
+            score += 15
+            details['Price'] = f'🟡 Affordable Rp {price:.0f}'
+        else:
+            score += 5
+            details['Price'] = f'🟠 Rp {price:.0f}'
+        
+        # === GRADING ===
+        if score >= 75:
+            grade, conf = "A", 75
+        elif score >= 65:
+            grade, conf = "B+", 70
+        elif score >= 50:
+            grade, conf = "B", 60
+        else:
+            grade, conf = "C", max(score, 0)
+        
+        return score, details, conf, grade
+    except:
+        return 0, {}, 0, "F"
+
 # ============= PROCESS =============
 def process_ticker(ticker, strategy, period):
     try:
@@ -766,6 +959,10 @@ def process_ticker(ticker, strategy, period):
             score, details, conf, grade = score_bsjp(df)
         elif strategy == "Bandar":
             score, details, conf, grade = score_bandar(df)
+        elif strategy == "Swing":
+            score, details, conf, grade = score_swing(df)
+        elif strategy == "Value":
+            score, details, conf, grade = score_value(df)
         else:
             score, details, conf, grade = score_general(df)
         
@@ -773,13 +970,30 @@ def process_ticker(ticker, strategy, period):
         if grade not in ['A+', 'A', 'B+', 'B', 'C']:
             return None
         
-        # Calculate levels for SPEED TRADING (1-2 days)
-        entry = round(price * 0.995, 0)  # Tighter entry -0.5%
-        tp1 = round(entry * 1.04, 0)     # Quick TP1 +4% (day 1)
-        tp2 = round(entry * 1.07, 0)     # TP2 +7% (day 2)
-        sl = round(entry * 0.97, 0)      # Tight SL -3%
+        # Calculate levels based on strategy
+        if strategy == "Swing":
+            # SWING TRADING (3-5 days)
+            entry = round(price * 0.99, 0)   # -1%
+            tp1 = round(entry * 1.06, 0)     # +6% (day 2-3)
+            tp2 = round(entry * 1.10, 0)     # +10% (day 4-5)
+            tp3 = round(entry * 1.15, 0)     # +15% (extended)
+            sl = round(entry * 0.95, 0)      # -5%
+        elif strategy == "Value":
+            # VALUE PLAYS (5-10 days)
+            entry = round(price * 0.98, 0)   # -2% (buy the dip)
+            tp1 = round(entry * 1.15, 0)     # +15%
+            tp2 = round(entry * 1.25, 0)     # +25%
+            tp3 = round(entry * 1.35, 0)     # +35% (moon!)
+            sl = round(entry * 0.93, 0)      # -7%
+        else:
+            # SPEED TRADING (1-2 days) - default
+            entry = round(price * 0.995, 0)  # -0.5%
+            tp1 = round(entry * 1.04, 0)     # +4% (day 1)
+            tp2 = round(entry * 1.07, 0)     # +7% (day 2)
+            tp3 = None
+            sl = round(entry * 0.97, 0)      # -3%
         
-        return {
+        result = {
             "Ticker": ticker.replace('.JK',''),
             "Price": price,
             "Score": score,
@@ -791,6 +1005,11 @@ def process_ticker(ticker, strategy, period):
             "SL": sl,
             "Details": details
         }
+        
+        if tp3:
+            result["TP3"] = tp3
+            
+        return result
     except:
         return None
 
@@ -833,8 +1052,8 @@ def scan_stocks(tickers, strategy, period, limit1, limit2):
     return df1, df2
 
 # ============= UI =============
-st.title("⚡ IDX Power Screener v4.3 SPEED TRADER")
-st.caption("Optimized for 1-2 Day Swing Trading | Quick Momentum Plays | Auto-Reject Negative Momentum")
+st.title("🎯 IDX Power Screener v4.4 COMPLETE")
+st.caption("3 Trading Styles: SPEED (1-2d) | SWING (3-5d) | VALUE (Undervalued) | With Charts & Auto-Filters")
 
 tickers = load_tickers()
 
@@ -848,7 +1067,9 @@ with st.sidebar:
     st.markdown("---")
     
     menu = st.radio("📋 Strategy", [
-        "🎯 Elite Screener",
+        "⚡ SPEED Trader (1-2d)",
+        "🎯 SWING Trader (3-5d)",
+        "💎 VALUE Plays (Undervalued)",
         "⚡ BPJS (Day Trading)",
         "🌙 BSJP (Overnight)",
         "🔮 Bandar Tracking",
@@ -867,7 +1088,7 @@ with st.sidebar:
         st.caption(f"Scan {len(tickers)} → Top {limit1} → Elite {limit2}")
     
     st.markdown("---")
-    st.caption("v4.3 SPEED - 1-2 Day Trading")
+    st.caption("v4.4 COMPLETE - 3 Trading Styles")
 
 # ============= MENU HANDLERS =============
 
@@ -1125,8 +1346,153 @@ elif "Bandar" in menu:
                 with st.expander(f"📊 Stage 1: All {len(df1)} Candidates"):
                     st.dataframe(df1, use_container_width=True)
 
-else:  # Elite Screener
-    st.markdown("### ⚡ Elite Screener - Speed Swing (1-2 Days)")
+elif "SWING" in menu:
+    st.markdown("### 🎯 SWING TRADER - Hold 3-5 Days")
+    
+    st.info("""
+    **SWING TRADING Strategy:**
+    - **Holding: 3-5 days**
+    - **TP1 (+6%):** Day 2-3 target
+    - **TP2 (+10%):** Day 4-5 target  
+    - **TP3 (+15%):** Extended target (let runners go)
+    - **SL (-5%):** Moderate stop loss
+    - Focus: Trend continuation + momentum building
+    - Entry: After breakout confirmed or pullback to EMA
+    - Exit: Trail with 20 EMA for runners
+    """)
+    
+    if st.button("🚀 START SWING SCAN", type="primary"):
+        df1, df2 = scan_stocks(tickers, "Swing", period, limit1, limit2)
+        
+        if df2.empty:
+            st.warning("⚠️ No A/B grade swing setups found")
+            if not df1.empty:
+                with st.expander(f"📊 Stage 1: {len(df1)} Lower-Grade Candidates"):
+                    st.dataframe(df1, use_container_width=True)
+        else:
+            st.markdown(f"### 🏆 TOP {len(df2)} SWING PICKS")
+            
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("Swing Picks", len(df2))
+            col2.metric("Avg Score", f"{df2['Score'].mean():.0f}/100")
+            col3.metric("Avg Confidence", f"{df2['Confidence'].mean():.0f}%")
+            col4.metric("Grade A+/A", len(df2[df2['Grade'].isin(['A+','A'])]))
+            
+            for idx, row in df2.iterrows():
+                emoji = "🎯" if row['Grade'] in ['A+','A'] else "🔹"
+                
+                with st.expander(f"{emoji} **{row['Ticker']}** | Grade **{row['Grade']}** | Score: {row['Score']}/100", expanded=True):
+                    col1, col2, col3, col4 = st.columns(4)
+                    col1.metric("Price", f"Rp {row['Price']:,.0f}")
+                    col2.metric("Score", f"{row['Score']}")
+                    col3.metric("Confidence", f"{row['Confidence']}%")
+                    col4.metric("Grade", row['Grade'])
+                    
+                    tp3_text = f"**TP3 (Runner):** Rp {row.get('TP3', 0):,.0f} (+15%)\n                    - Trail with 20 EMA\n                    " if 'TP3' in row and row['TP3'] else ""
+                    
+                    st.success(f"""
+                    **🎯 SWING TRADING PLAN (3-5 Days):**
+                    
+                    **Entry:** Rp {row['Entry']:,.0f} (-1%)
+                    
+                    **TP1 (Day 2-3):** Rp {row['TP1']:,.0f} (+6%)
+                    - Sell 30% position
+                    
+                    **TP2 (Day 4-5):** Rp {row['TP2']:,.0f} (+10%)
+                    - Sell 40% position
+                    
+                    {tp3_text}
+                    **Stop Loss:** Rp {row['SL']:,.0f} (-5%)
+                    
+                    ⏰ **Hold 3-5 days, let winners run!**
+                    """)
+                    
+                    st.markdown("**Technical Analysis:**")
+                    for k, v in row['Details'].items():
+                        st.caption(f"• **{k}**: {v}")
+            
+            if not df1.empty:
+                with st.expander(f"📊 Stage 1: All {len(df1)} Candidates"):
+                    st.dataframe(df1, use_container_width=True)
+
+elif "VALUE" in menu:
+    st.markdown("### 💎 VALUE PLAYS - Undervalued Gems")
+    
+    st.info("""
+    **VALUE INVESTING Strategy:**
+    - **Target: Affordable stocks <Rp 1,000**
+    - **Entry: Near support (oversold)**
+    - **Holding: 5-10 days (patient)**
+    - **TP1 (+15%):** First target
+    - **TP2 (+25%):** Second target
+    - **TP3 (+35%):** Moon target!
+    - **SL (-7%):** Wider stop (reversal needs space)
+    
+    **Looking for:**
+    - Stocks near EMA50 support or BB lower
+    - RSI <40 (oversold/undervalued)
+    - Volume picking up (smart money accumulating)
+    - Reversal patterns forming
+    """)
+    
+    if st.button("🚀 FIND VALUE PLAYS", type="primary"):
+        df1, df2 = scan_stocks(tickers, "Value", period, limit1, limit2)
+        
+        if df2.empty:
+            st.warning("⚠️ No quality value plays found")
+            if not df1.empty:
+                with st.expander(f"📊 Stage 1: {len(df1)} Potential Values"):
+                    st.dataframe(df1, use_container_width=True)
+        else:
+            st.markdown(f"### 💎 TOP {len(df2)} VALUE PLAYS")
+            
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("Value Picks", len(df2))
+            col2.metric("Avg Price", f"Rp {df2['Price'].mean():.0f}")
+            col3.metric("Avg Score", f"{df2['Score'].mean():.0f}/100")
+            col4.metric("Grade A/B+", len(df2[df2['Grade'].isin(['A','B+'])]))
+            
+            for idx, row in df2.iterrows():
+                emoji = "💎" if row['Grade'] in ['A','B+'] else "💰"
+                
+                with st.expander(f"{emoji} **{row['Ticker']}** | Rp {row['Price']:,.0f} | Grade **{row['Grade']}** | Score: {row['Score']}/100", expanded=True):
+                    col1, col2, col3, col4 = st.columns(4)
+                    col1.metric("Price", f"Rp {row['Price']:,.0f}", help="Affordable entry!")
+                    col2.metric("Score", f"{row['Score']}")
+                    col3.metric("Confidence", f"{row['Confidence']}%")
+                    col4.metric("Grade", row['Grade'])
+                    
+                    st.success(f"""
+                    💎 **VALUE PLAY SETUP (5-10 Days):**
+                    
+                    **Entry Zone:** Rp {row['Entry']:,.0f} (-2%)
+                    *(Buy the dip at support)*
+                    
+                    **TP1:** Rp {row['TP1']:,.0f} (+15%)
+                    - Sell 30% position
+                    
+                    **TP2:** Rp {row['TP2']:,.0f} (+25%)
+                    - Sell 40% position
+                    
+                    **TP3 (Moon!):** Rp {row.get('TP3', 0):,.0f} (+35%)
+                    - Let remaining 30% run!
+                    
+                    **Stop Loss:** Rp {row['SL']:,.0f} (-7%)
+                    
+                    ⏰ **Be patient - 5-10 days for reversal!**
+                    💡 **This is a VALUE play - buy cheap, sell high!**
+                    """)
+                    
+                    st.markdown("**Why Undervalued:**")
+                    for k, v in row['Details'].items():
+                        st.caption(f"• **{k}**: {v}")
+            
+            if not df1.empty:
+                with st.expander(f"📊 Stage 1: All {len(df1)} Candidates"):
+                    st.dataframe(df1, use_container_width=True)
+
+elif "SPEED" in menu or "Elite" in menu:  # SPEED TRADER (default)
+    st.markdown("### ⚡ SPEED TRADER - Quick 1-2 Days")
     
     st.info("""
     **SPEED TRADING Strategy:**
@@ -1139,25 +1505,25 @@ else:  # Elite Screener
     - Exit: Before market close or next morning
     """)
     
-    if st.button("🚀 START ELITE SCAN", type="primary"):
+    if st.button("🚀 START SPEED SCAN", type="primary"):
         df1, df2 = scan_stocks(tickers, "General", period, limit1, limit2)
         
         if df2.empty:
-            st.warning("⚠️ No A/B grade elite stocks found")
+            st.warning("⚠️ No A/B grade speed setups found")
             if not df1.empty:
                 with st.expander(f"📊 Stage 1: {len(df1)} Lower-Grade Candidates"):
                     st.dataframe(df1, use_container_width=True)
         else:
-            st.markdown(f"### 🏆 TOP {len(df2)} ELITE PICKS")
+            st.markdown(f"### 🏆 TOP {len(df2)} SPEED PICKS")
             
             col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Elite Picks", len(df2))
+            col1.metric("Speed Picks", len(df2))
             col2.metric("Avg Score", f"{df2['Score'].mean():.0f}/100")
             col3.metric("Avg Confidence", f"{df2['Confidence'].mean():.0f}%")
             col4.metric("Grade A+/A", len(df2[df2['Grade'].isin(['A+','A'])]))
             
             for idx, row in df2.iterrows():
-                emoji = "💎" if row['Grade'] in ['A+','A'] else "🔹"
+                emoji = "⚡" if row['Grade'] in ['A+','A'] else "🔹"
                 
                 with st.expander(f"{emoji} **{row['Ticker']}** | Grade **{row['Grade']}** | Score: {row['Score']}/100", expanded=True):
                     col1, col2, col3, col4 = st.columns(4)
@@ -1193,5 +1559,8 @@ else:  # Elite Screener
                 with st.expander(f"📊 Stage 1: All {len(df1)} Candidates"):
                     st.dataframe(df1, use_container_width=True)
 
+else:  # Fallback
+    st.error("Please select a trading strategy from the sidebar!")
+
 st.markdown("---")
-st.caption("⚡ IDX Power Screener v4.3 SPEED TRADER | Optimized for 1-2 Day Swing | Educational purposes only")
+st.caption("⚡ IDX Power Screener v4.4 COMPLETE | 3 Trading Styles | Educational purposes only")
