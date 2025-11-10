@@ -8,8 +8,10 @@ import requests
 from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import os
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
-st.set_page_config(page_title="IDX Power Screener v4.2 ULTRA", page_icon="🎯", layout="wide")
+st.set_page_config(page_title="IDX Power Screener v4.3 SPEED", page_icon="⚡", layout="wide")
 
 # ============= LOAD TICKERS =============
 def load_tickers():
@@ -111,6 +113,104 @@ def is_bpjs_time():
 def is_bsjp_time():
     jkt_hour = get_jakarta_time().hour
     return 14 <= jkt_hour < 16
+
+# ============= CHART VISUALIZATION =============
+def create_chart(df, ticker, period_days=30):
+    """Create interactive chart with technical indicators"""
+    try:
+        # Get last N days
+        df_chart = df.tail(period_days).copy()
+        
+        # Create subplots
+        fig = make_subplots(
+            rows=3, cols=1,
+            shared_xaxes=True,
+            vertical_spacing=0.03,
+            row_heights=[0.6, 0.2, 0.2],
+            subplot_titles=(f'{ticker} - Price & EMAs', 'Volume', 'RSI')
+        )
+        
+        # Candlestick
+        fig.add_trace(
+            go.Candlestick(
+                x=df_chart.index,
+                open=df_chart['Open'],
+                high=df_chart['High'],
+                low=df_chart['Low'],
+                close=df_chart['Close'],
+                name='Price',
+                increasing_line_color='#26a69a',
+                decreasing_line_color='#ef5350'
+            ),
+            row=1, col=1
+        )
+        
+        # EMAs
+        colors = {'EMA9': '#2196F3', 'EMA21': '#FF9800', 'EMA50': '#F44336', 'EMA200': '#9E9E9E'}
+        for ema in ['EMA9', 'EMA21', 'EMA50', 'EMA200']:
+            if ema in df_chart.columns:
+                fig.add_trace(
+                    go.Scatter(
+                        x=df_chart.index,
+                        y=df_chart[ema],
+                        name=ema,
+                        line=dict(color=colors[ema], width=1.5)
+                    ),
+                    row=1, col=1
+                )
+        
+        # Volume bars
+        colors_vol = ['#ef5350' if df_chart['Close'].iloc[i] < df_chart['Open'].iloc[i] 
+                      else '#26a69a' for i in range(len(df_chart))]
+        fig.add_trace(
+            go.Bar(
+                x=df_chart.index,
+                y=df_chart['Volume'],
+                name='Volume',
+                marker_color=colors_vol,
+                showlegend=False
+            ),
+            row=2, col=1
+        )
+        
+        # RSI
+        fig.add_trace(
+            go.Scatter(
+                x=df_chart.index,
+                y=df_chart['RSI'],
+                name='RSI',
+                line=dict(color='#9C27B0', width=2)
+            ),
+            row=3, col=1
+        )
+        
+        # RSI levels
+        fig.add_hline(y=70, line_dash="dash", line_color="red", opacity=0.5, row=3, col=1)
+        fig.add_hline(y=30, line_dash="dash", line_color="green", opacity=0.5, row=3, col=1)
+        fig.add_hline(y=50, line_dash="dot", line_color="gray", opacity=0.3, row=3, col=1)
+        
+        # Update layout
+        fig.update_layout(
+            height=700,
+            showlegend=True,
+            xaxis_rangeslider_visible=False,
+            hovermode='x unified',
+            template='plotly_dark',
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="right",
+                x=1
+            )
+        )
+        
+        fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor='#333')
+        fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='#333')
+        
+        return fig
+    except Exception as e:
+        return None
 
 # ============= FETCH DATA =============
 @st.cache_data(ttl=300, show_spinner=False)
@@ -341,16 +441,25 @@ def score_general(df):
             details['Volume'] = f'🔴 Weak {vol_ratio:.1f}x'
         
         # === MOMENTUM (15 points max) ===
+        # For 1-2 day trading, focus on SHORT-TERM momentum
+        mom_5d = r['MOM_5D']
+        mom_10d = r['MOM_10D']
         mom_20d = r['MOM_20D']
-        if mom_20d > 10:
+        
+        # Short-term momentum is MORE important for speed trading
+        if mom_5d > 3 and mom_10d > 5:
             score += 15
-            details['Momentum'] = f'🟢 Strong +{mom_20d:.1f}%'
-        elif mom_20d > 5:
+            details['Momentum'] = f'🟢 Strong short-term +{mom_5d:.1f}% (5D)'
+        elif mom_5d > 1 and mom_10d > 2:
             score += 10
-            details['Momentum'] = f'🟡 Good +{mom_20d:.1f}%'
-        elif mom_20d > 0:
+            details['Momentum'] = f'🟡 Good +{mom_5d:.1f}% (5D)'
+        elif mom_5d > 0:
             score += 5
-            details['Momentum'] = f'🟠 Positive +{mom_20d:.1f}%'
+            details['Momentum'] = f'🟠 Positive +{mom_5d:.1f}% (5D)'
+        elif mom_20d > 5:
+            # Fallback to 20D if 5D weak but 20D strong
+            score += 8
+            details['Momentum'] = f'🟡 20D momentum +{mom_20d:.1f}%'
         # Note: Negative momentum already handled above
         
         # === APPLY MOMENTUM PENALTY ===
@@ -664,11 +773,11 @@ def process_ticker(ticker, strategy, period):
         if grade not in ['A+', 'A', 'B+', 'B', 'C']:
             return None
         
-        # Calculate levels
-        entry = round(price * 0.99, 0)
-        tp1 = round(entry * 1.08, 0)
-        tp2 = round(entry * 1.15, 0)
-        sl = round(entry * 0.94, 0)
+        # Calculate levels for SPEED TRADING (1-2 days)
+        entry = round(price * 0.995, 0)  # Tighter entry -0.5%
+        tp1 = round(entry * 1.04, 0)     # Quick TP1 +4% (day 1)
+        tp2 = round(entry * 1.07, 0)     # TP2 +7% (day 2)
+        sl = round(entry * 0.97, 0)      # Tight SL -3%
         
         return {
             "Ticker": ticker.replace('.JK',''),
@@ -724,8 +833,8 @@ def scan_stocks(tickers, strategy, period, limit1, limit2):
     return df1, df2
 
 # ============= UI =============
-st.title("🎯 IDX Power Screener v4.2 ULTRA STRICT")
-st.caption("Enhanced 2-Stage Filter | Auto-Reject Negative Momentum | Scan All → Top 50 → Top 10 Elite")
+st.title("⚡ IDX Power Screener v4.3 SPEED TRADER")
+st.caption("Optimized for 1-2 Day Swing Trading | Quick Momentum Plays | Auto-Reject Negative Momentum")
 
 tickers = load_tickers()
 
@@ -758,7 +867,7 @@ with st.sidebar:
         st.caption(f"Scan {len(tickers)} → Top {limit1} → Elite {limit2}")
     
     st.markdown("---")
-    st.caption("v4.2 ULTRA - Momentum Filter")
+    st.caption("v4.3 SPEED - 1-2 Day Trading")
 
 # ============= MENU HANDLERS =============
 
@@ -771,29 +880,53 @@ if "Single Stock" in menu:
     
     if st.button("🔍 ANALYZE", type="primary"):
         ticker_full = selected if selected.endswith('.JK') else f"{selected}.JK"
-        result = process_ticker(ticker_full, strategy_single, period)
         
-        if result is None:
-            st.error("❌ Analysis failed or stock rejected by filters")
-        else:
-            st.markdown(f"## {result['Ticker']}")
-            st.markdown(f"### Grade: **{result['Grade']}**")
+        with st.spinner(f"Analyzing {selected}..."):
+            df = fetch_data(ticker_full, period)
             
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Price", f"Rp {result['Price']:,.0f}")
-            col2.metric("Score", f"{result['Score']}/100")
-            col3.metric("Confidence", f"{result['Confidence']}%")
-            
-            st.success(f"""
-            **Entry Zone:** Rp {result['Entry']:,.0f}
-            **TP1 (+8%):** Rp {result['TP1']:,.0f}
-            **TP2 (+15%):** Rp {result['TP2']:,.0f}
-            **Stop Loss (-6%):** Rp {result['SL']:,.0f}
-            """)
-            
-            st.markdown("**Technical Analysis:**")
-            for k, v in result['Details'].items():
-                st.caption(f"• **{k}**: {v}")
+            if df is None:
+                st.error("❌ Failed to fetch data")
+            else:
+                result = process_ticker(ticker_full, strategy_single, period)
+                
+                if result is None:
+                    st.error("❌ Analysis failed or stock rejected by filters")
+                    
+                    # Show chart anyway for rejected stocks
+                    st.markdown("### 📊 Chart (For Reference)")
+                    chart = create_chart(df, selected)
+                    if chart:
+                        st.plotly_chart(chart, use_container_width=True)
+                else:
+                    # Show chart FIRST
+                    st.markdown("### 📊 Interactive Chart")
+                    chart = create_chart(df, selected)
+                    if chart:
+                        st.plotly_chart(chart, use_container_width=True)
+                    
+                    # Then show analysis
+                    st.markdown(f"## 💎 {result['Ticker']}")
+                    st.markdown(f"### Grade: **{result['Grade']}**")
+                    
+                    col1, col2, col3 = st.columns(3)
+                    col1.metric("Price", f"Rp {result['Price']:,.0f}")
+                    col2.metric("Score", f"{result['Score']}/100")
+                    col3.metric("Confidence", f"{result['Confidence']}%")
+                    
+                    st.success(f"""
+                    **🎯 SPEED TRADING PLAN (1-2 Days):**
+                    
+                    **Entry:** Rp {result['Entry']:,.0f} (-0.5%)
+                    **TP1 (Day 1):** Rp {result['TP1']:,.0f} (+4%)
+                    **TP2 (Day 2):** Rp {result['TP2']:,.0f} (+7%)
+                    **Stop Loss:** Rp {result['SL']:,.0f} (-3%)
+                    
+                    💡 **Exit dalam 1-2 hari maksimal!**
+                    """)
+                    
+                    st.markdown("**Technical Analysis:**")
+                    for k, v in result['Details'].items():
+                        st.caption(f"• **{k}**: {v}")
 
 elif "BPJS" in menu:
     st.markdown("### ⚡ BPJS - Beli Pagi Jual Sore")
@@ -993,15 +1126,17 @@ elif "Bandar" in menu:
                     st.dataframe(df1, use_container_width=True)
 
 else:  # Elite Screener
-    st.markdown("### 🎯 Elite Screener - General Swing Trading")
+    st.markdown("### ⚡ Elite Screener - Speed Swing (1-2 Days)")
     
     st.info("""
-    **Multi-Factor Strategy:**
-    - Trend: EMA alignment (9>21>50>200)
-    - Momentum: RSI sweet spot (50-65)
-    - Volume: Above average confirmation
-    - Timeline: 2-7 days swing trades
-    - Position: 3-lot strategy (TP1, TP2, Trail)
+    **SPEED TRADING Strategy:**
+    - **Holding: 1-2 days MAX**
+    - **TP1 (+4%):** Day 1 exit target
+    - **TP2 (+7%):** Day 2 max target
+    - **SL (-3%):** Tight stop loss
+    - Focus: Short-term momentum + volume surge
+    - Entry: Morning session (09:15-10:00)
+    - Exit: Before market close or next morning
     """)
     
     if st.button("🚀 START ELITE SCAN", type="primary"):
@@ -1032,14 +1167,22 @@ else:  # Elite Screener
                     col4.metric("Grade", row['Grade'])
                     
                     st.success(f"""
-                    **🎯 Entry Zone:** Rp {row['Entry']:,.0f}
+                    **⚡ SPEED TRADING PLAN (1-2 Days):**
                     
-                    **3-Lot Position Management:**
-                    - **Lot 1 (1/3):** Sell at Rp {row['TP1']:,.0f} (+8%)
-                    - **Lot 2 (1/3):** Sell at Rp {row['TP2']:,.0f} (+15%)
-                    - **Lot 3 (1/3):** Trail with 20 EMA
+                    **Entry:** Rp {row['Entry']:,.0f} (buy dip -0.5%)
                     
-                    **🛑 Stop Loss:** Rp {row['SL']:,.0f} (-6%)
+                    **Day 1 Target:** Rp {row['TP1']:,.0f} (+4%)
+                    - Jual 50% posisi
+                    - Move SL to breakeven
+                    
+                    **Day 2 Target:** Rp {row['TP2']:,.0f} (+7%)
+                    - Jual sisanya
+                    - MAX hold: 2 hari!
+                    
+                    **Stop Loss:** Rp {row['SL']:,.0f} (-3%)
+                    - Tight SL for quick cut
+                    
+                    ⏰ **EXIT DALAM 1-2 HARI!**
                     """)
                     
                     st.markdown("**Technical Analysis:**")
@@ -1051,4 +1194,4 @@ else:  # Elite Screener
                     st.dataframe(df1, use_container_width=True)
 
 st.markdown("---")
-st.caption("🎯 IDX Power Screener v4.2 ULTRA STRICT | Auto-Reject Negative Momentum | Educational purposes only")
+st.caption("⚡ IDX Power Screener v4.3 SPEED TRADER | Optimized for 1-2 Day Swing | Educational purposes only")
