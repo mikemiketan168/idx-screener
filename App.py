@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import os
 
-st.set_page_config(page_title="IDX Power Screener v4.1", page_icon="🎯", layout="wide")
+st.set_page_config(page_title="IDX Power Screener v4.2 ULTRA", page_icon="🎯", layout="wide")
 
 # ============= LOAD TICKERS =============
 def load_tickers():
@@ -237,7 +237,7 @@ def apply_liquidity_filter(df, ticker):
 
 # ============= ENHANCED SCORING =============
 def score_general(df):
-    """STRICTER General Swing Trading Scoring"""
+    """ULTRA STRICT General Swing Trading Scoring - v4.2"""
     try:
         r = df.iloc[-1]
         score = 0
@@ -258,6 +258,26 @@ def score_general(df):
         # 3. Weak positioning - below key EMAs
         if r['Close'] < r['EMA50']:
             return 0, {"Rejected": "Below EMA50"}, 0, "F"
+        
+        # 4. MANDATORY: Negative momentum rejection (NEW!)
+        mom_20d = r['MOM_20D']
+        if mom_20d < -8:
+            return 0, {"Rejected": f"Strong negative momentum ({mom_20d:.1f}%)"}, 0, "F"
+        
+        # 5. MANDATORY: Weak volume rejection (NEW!)
+        vol_ratio = r['VOL_RATIO']
+        if vol_ratio < 1.0:
+            return 0, {"Rejected": f"Insufficient volume ({vol_ratio:.1f}x)"}, 0, "F"
+        
+        # === MOMENTUM PENALTY (for -5% to -8%) ===
+        if -8 <= mom_20d < -5:
+            momentum_penalty = 0.6  # 40% penalty
+            details['⚠️ Warning'] = f'Weak momentum {mom_20d:.1f}%'
+        elif -5 <= mom_20d < 0:
+            momentum_penalty = 0.8  # 20% penalty
+            details['⚠️ Warning'] = f'Slight negative momentum {mom_20d:.1f}%'
+        else:
+            momentum_penalty = 1.0  # No penalty
         
         # === TREND STRENGTH (40 points max) ===
         # Perfect bullish alignment: 9 > 21 > 50 > 200
@@ -331,9 +351,10 @@ def score_general(df):
         elif mom_20d > 0:
             score += 5
             details['Momentum'] = f'🟠 Positive +{mom_20d:.1f}%'
-        else:
-            score += 0
-            details['Momentum'] = f'🔴 Negative {mom_20d:.1f}%'
+        # Note: Negative momentum already handled above
+        
+        # === APPLY MOMENTUM PENALTY ===
+        score = int(score * momentum_penalty)
         
         # === GRADE CALCULATION ===
         if score >= 85:
@@ -703,8 +724,8 @@ def scan_stocks(tickers, strategy, period, limit1, limit2):
     return df1, df2
 
 # ============= UI =============
-st.title("🎯 IDX Power Screener v4.1 PRO")
-st.caption("Enhanced 2-Stage Filter with Strict Scoring | Scan All → Top 50 → Top 10 Elite")
+st.title("🎯 IDX Power Screener v4.2 ULTRA STRICT")
+st.caption("Enhanced 2-Stage Filter | Auto-Reject Negative Momentum | Scan All → Top 50 → Top 10 Elite")
 
 tickers = load_tickers()
 
@@ -737,7 +758,7 @@ with st.sidebar:
         st.caption(f"Scan {len(tickers)} → Top {limit1} → Elite {limit2}")
     
     st.markdown("---")
-    st.caption("v4.1 PRO - Enhanced Scoring")
+    st.caption("v4.2 ULTRA - Momentum Filter")
 
 # ============= MENU HANDLERS =============
 
@@ -1030,4 +1051,4 @@ else:  # Elite Screener
                     st.dataframe(df1, use_container_width=True)
 
 st.markdown("---")
-st.caption("🎯 IDX Power Screener v4.1 PRO | Enhanced Scoring & Filters | Educational purposes only")
+st.caption("🎯 IDX Power Screener v4.2 ULTRA STRICT | Auto-Reject Negative Momentum | Educational purposes only")
