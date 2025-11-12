@@ -10,8 +10,115 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import os
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+from io import StringIO
 
-st.set_page_config(page_title="IDX Power Screener v4.4 COMPLETE", page_icon="🎯", layout="wide")
+st.set_page_config(page_title="IDX Power Screener v4.5 ENHANCED", page_icon="🚀", layout="wide")
+
+# ============= SESSION STATE INITIALIZATION =============
+# Initialize session state for persistence (lock screen safe!)
+if 'last_scan_results' not in st.session_state:
+    st.session_state.last_scan_results = None
+if 'last_scan_time' not in st.session_state:
+    st.session_state.last_scan_time = None
+if 'last_scan_strategy' not in st.session_state:
+    st.session_state.last_scan_strategy = None
+if 'scan_count' not in st.session_state:
+    st.session_state.scan_count = 0
+
+# ============= IHSG MARKET WIDGET =============
+@st.cache_data(ttl=180)  # Cache for 3 minutes
+def fetch_ihsg_data():
+    """Fetch IHSG (Jakarta Composite Index) data"""
+    try:
+        import yfinance as yf
+        ihsg = yf.Ticker("^JKSE")
+        hist = ihsg.history(period="1d")
+        
+        if not hist.empty:
+            current = hist['Close'].iloc[-1]
+            open_price = hist['Open'].iloc[-1]
+            high = hist['High'].iloc[-1]
+            low = hist['Low'].iloc[-1]
+            change = current - open_price
+            change_pct = (change / open_price) * 100
+            
+            return {
+                'price': current,
+                'change': change,
+                'change_pct': change_pct,
+                'high': high,
+                'low': low,
+                'status': 'up' if change >= 0 else 'down'
+            }
+    except:
+        pass
+    return None
+
+def display_ihsg_widget():
+    """Display IHSG market overview widget"""
+    ihsg = fetch_ihsg_data()
+    
+    if ihsg:
+        status_emoji = "🟢" if ihsg['status'] == 'up' else "🔴"
+        status_text = "BULLISH" if ihsg['status'] == 'up' else "BEARISH"
+        
+        # Determine market condition
+        if ihsg['change_pct'] > 1.5:
+            condition = "🔥 Strong uptrend - Good for momentum!"
+            guidance = "✅ Excellent for SPEED/SWING trades"
+        elif ihsg['change_pct'] > 0.5:
+            condition = "📈 Moderate uptrend - Good conditions"
+            guidance = "✅ Good for all strategies"
+        elif ihsg['change_pct'] > -0.5:
+            condition = "➡️ Sideways - Mixed conditions"
+            guidance = "⚠️ Be selective, use tight stops"
+        elif ihsg['change_pct'] > -1.5:
+            condition = "📉 Moderate downtrend - Caution"
+            guidance = "⚠️ Focus on VALUE plays, avoid SPEED"
+        else:
+            condition = "🔻 Strong downtrend - High risk"
+            guidance = "❌ Consider sitting out or very selective"
+        
+        st.markdown(f"""
+        <div style='background: linear-gradient(135deg, #1e3a8a 0%, #1e40af 100%); 
+                    padding: 15px; border-radius: 10px; margin-bottom: 20px;
+                    border-left: 5px solid {"#22c55e" if ihsg['status'] == 'up' else "#ef4444"}'>
+            <div style='display: flex; justify-content: space-between; align-items: center;'>
+                <div>
+                    <h3 style='margin: 0; color: white;'>📊 MARKET OVERVIEW</h3>
+                    <p style='margin: 5px 0; color: #e0e7ff; font-size: 0.9em;'>
+                        Jakarta Composite Index
+                    </p>
+                </div>
+                <div style='text-align: right;'>
+                    <h2 style='margin: 0; color: white;'>
+                        {status_emoji} {ihsg['price']:,.2f}
+                    </h2>
+                    <p style='margin: 5px 0; color: {"#22c55e" if ihsg['status'] == 'up' else "#ef4444"}; 
+                              font-size: 1.1em; font-weight: bold;'>
+                        {ihsg['change']:+,.2f} ({ihsg['change_pct']:+.2f}%)
+                    </p>
+                </div>
+            </div>
+            <div style='margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(255,255,255,0.2);'>
+                <p style='margin: 3px 0; color: #e0e7ff; font-size: 0.85em;'>
+                    📊 High: {ihsg['high']:,.2f} | Low: {ihsg['low']:,.2f} | Status: <strong>{status_text}</strong>
+                </p>
+                <p style='margin: 3px 0; color: #fbbf24; font-size: 0.9em;'>
+                    {condition}
+                </p>
+                <p style='margin: 3px 0; color: #a5b4fc; font-size: 0.85em;'>
+                    {guidance}
+                </p>
+                <p style='margin: 5px 0 0 0; color: #94a3b8; font-size: 0.75em;'>
+                    ⏰ Last update: {datetime.now().strftime('%H:%M:%S')} WIB | 🔄 Auto-refresh: 3 min
+                </p>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        st.info("📊 IHSG data temporarily unavailable")
+
 
 # ============= LOAD TICKERS =============
 def load_tickers():
@@ -1013,6 +1120,58 @@ def process_ticker(ticker, strategy, period):
     except:
         return None
 
+def save_scan_to_session(df2, df1, strategy):
+    """Save scan results to session state"""
+    st.session_state.last_scan_results = (df2, df1)
+    st.session_state.last_scan_time = datetime.now()
+    st.session_state.last_scan_strategy = strategy
+    st.session_state.scan_count += 1
+
+def display_last_scan_info():
+    """Display last scan summary if available"""
+    if st.session_state.last_scan_results:
+        df2, df1 = st.session_state.last_scan_results
+        time_ago = datetime.now() - st.session_state.last_scan_time
+        mins_ago = int(time_ago.total_seconds() / 60)
+        
+        st.markdown(f"""
+        <div style='background: linear-gradient(135deg, #064e3b 0%, #065f46 100%); 
+                    padding: 12px; border-radius: 8px; margin-bottom: 15px;
+                    border-left: 4px solid #10b981;'>
+            <p style='margin: 0; color: white; font-weight: bold;'>
+                📂 LAST SCAN RESULTS
+            </p>
+            <p style='margin: 5px 0 0 0; color: #d1fae5; font-size: 0.9em;'>
+                Strategy: {st.session_state.last_scan_strategy} | 
+                Time: {st.session_state.last_scan_time.strftime('%H:%M:%S')} ({mins_ago} min ago) | 
+                Found: {len(df2)} Grade A+/A stocks
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        return True
+    return False
+
+def create_csv_download(df, strategy):
+    """Create CSV download button for results"""
+    if not df.empty:
+        # Prepare dataframe for export
+        export_df = df.copy()
+        if 'Details' in export_df.columns:
+            export_df = export_df.drop('Details', axis=1)
+        
+        csv = export_df.to_csv(index=False)
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M')
+        filename = f"IDX_{strategy}_scan_{timestamp}.csv"
+        
+        st.download_button(
+            label="💾 Download Results (CSV)",
+            data=csv,
+            file_name=filename,
+            mime="text/csv",
+            help="Save scan results to your device"
+        )
+
 def scan_stocks(tickers, strategy, period, limit1, limit2):
     st.info(f"🔍 **STAGE 1**: Scanning {len(tickers)} stocks for {strategy}...")
     
@@ -1049,11 +1208,18 @@ def scan_stocks(tickers, strategy, period, limit1, limit2):
     df2 = df1[df1['Grade'].isin(['A+','A','B+','B'])].head(limit2)
     st.success(f"🏆 Stage 2: {len(df2)} elite picks (Avg conf: {df2['Confidence'].mean():.0f}%)")
     
+    # Save to session state for persistence
+    save_scan_to_session(df2, df1, strategy)
+    
     return df1, df2
 
+
 # ============= UI =============
-st.title("🎯 IDX Power Screener v4.4 COMPLETE")
-st.caption("3 Trading Styles: SPEED (1-2d) | SWING (3-5d) | VALUE (Undervalued) | With Charts & Auto-Filters")
+st.title("🚀 IDX Power Screener v4.5 ENHANCED")
+st.caption("3 Trading Styles + IHSG Dashboard + Session Persistence | Lock Screen Safe!")
+
+# Display IHSG Market Overview
+display_ihsg_widget()
 
 tickers = load_tickers()
 
@@ -1088,7 +1254,7 @@ with st.sidebar:
         st.caption(f"Scan {len(tickers)} → Top {limit1} → Elite {limit2}")
     
     st.markdown("---")
-    st.caption("v4.4 COMPLETE - 3 Trading Styles")
+    st.caption("v4.5 ENHANCED - Session Persistence + IHSG")
 
 # ============= MENU HANDLERS =============
 
@@ -1349,6 +1515,9 @@ elif "Bandar" in menu:
 elif "SWING" in menu:
     st.markdown("### 🎯 SWING TRADER - Hold 3-5 Days")
     
+    # Display last scan info
+    display_last_scan_info()
+    
     st.info("""
     **SWING TRADING Strategy:**
     - **Holding: 3-5 days**
@@ -1371,6 +1540,9 @@ elif "SWING" in menu:
                     st.dataframe(df1, use_container_width=True)
         else:
             st.markdown(f"### 🏆 TOP {len(df2)} SWING PICKS")
+            
+            # Add download button
+            create_csv_download(df2, "SWING")
             
             col1, col2, col3, col4 = st.columns(4)
             col1.metric("Swing Picks", len(df2))
@@ -1418,6 +1590,9 @@ elif "SWING" in menu:
 elif "VALUE" in menu:
     st.markdown("### 💎 VALUE PLAYS - Undervalued Gems")
     
+    # Display last scan info
+    display_last_scan_info()
+    
     st.info("""
     **VALUE INVESTING Strategy:**
     - **Target: Affordable stocks <Rp 1,000**
@@ -1445,6 +1620,9 @@ elif "VALUE" in menu:
                     st.dataframe(df1, use_container_width=True)
         else:
             st.markdown(f"### 💎 TOP {len(df2)} VALUE PLAYS")
+            
+            # Add download button
+            create_csv_download(df2, "VALUE")
             
             col1, col2, col3, col4 = st.columns(4)
             col1.metric("Value Picks", len(df2))
@@ -1494,6 +1672,9 @@ elif "VALUE" in menu:
 elif "SPEED" in menu or "Elite" in menu:  # SPEED TRADER (default)
     st.markdown("### ⚡ SPEED TRADER - Quick 1-2 Days")
     
+    # Display last scan info if available
+    display_last_scan_info()
+    
     st.info("""
     **SPEED TRADING Strategy:**
     - **Holding: 1-2 days MAX**
@@ -1515,6 +1696,9 @@ elif "SPEED" in menu or "Elite" in menu:  # SPEED TRADER (default)
                     st.dataframe(df1, use_container_width=True)
         else:
             st.markdown(f"### 🏆 TOP {len(df2)} SPEED PICKS")
+            
+            # Add download button
+            create_csv_download(df2, "SPEED")
             
             col1, col2, col3, col4 = st.columns(4)
             col1.metric("Speed Picks", len(df2))
@@ -1563,4 +1747,4 @@ else:  # Fallback
     st.error("Please select a trading strategy from the sidebar!")
 
 st.markdown("---")
-st.caption("⚡ IDX Power Screener v4.4 COMPLETE | 3 Trading Styles | Educational purposes only")
+st.caption("🚀 IDX Power Screener v4.5 ENHANCED | Lock Screen Safe + IHSG Dashboard | Educational purposes only")
