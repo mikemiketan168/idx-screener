@@ -880,15 +880,17 @@ def detect_trend(last_row):
     else:
         return "Downtrend"
 
-def classify_signal(last_row, score, grade, trend):
+def classify_signal(last_row, score, gradedef classify_signal(last_row, score, grade, trend):
     rsi        = float(last_row['RSI'])
     vol_ratio  = float(last_row['VOL_RATIO'])
     mom_5d     = float(last_row['MOM_5D'])
     mom_20d    = float(last_row['MOM_20D'])
 
-    # 1) UPTREND / STRONG UPTREND
+    # ================================
+    # 1) UPTREND LOGIC
+    # ================================
     if trend in ["Strong Uptrend", "Uptrend"]:
-        # Strong Buy: kondisi ideal dan sehat
+        # STRONG BUY (semua sangat sehat)
         if (
             grade in ["A+", "A"]
             and vol_ratio > 1.5
@@ -898,7 +900,7 @@ def classify_signal(last_row, score, grade, trend):
         ):
             return "Strong Buy"
 
-        # Buy: masih bagus tapi sedikit kurang ideal
+        # BUY NORMAL
         if (
             grade in ["A+", "A", "B+"]
             and vol_ratio > 1.0
@@ -907,22 +909,26 @@ def classify_signal(last_row, score, grade, trend):
         ):
             return "Buy"
 
-        # Uptrend tapi mulai lelah / berisiko entry baru
+        # TREND BAGUS TAPI OVERBOUGHT / MELEMAH
         if rsi > 75 or mom_5d < 0 or vol_ratio < 1.0:
             return "Take Profit / Wait"
 
-        # Default di uptrend: hold
+        # DEFAULT (UPTREND tapi belum entry)
         return "Hold"
 
+    # ================================
     # 2) SIDEWAYS
+    # ================================
     if trend == "Sideways":
         if grade in ["A+", "A", "B+"]:
             return "Buy on Dip"
         return "Hold"
 
+    # ================================
     # 3) DOWNTREND
+    # ================================
     if trend == "Downtrend":
-        # Spekulatif: kemungkinan reversal
+        # REVERSAL SPEKULATIF
         if grade in ["A+", "A"] and rsi < 35 and mom_20d > -5:
             return "Speculative Buy"
         return "Sell"
