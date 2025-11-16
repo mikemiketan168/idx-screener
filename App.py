@@ -11,13 +11,14 @@ import os
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+# ================== BASIC CONFIG ==================
 st.set_page_config(
-    page_title="IDX Power Screener v4.5 ENHANCED",
+    page_title="IDX Power Screener v5.0 STOCKBOT",
     page_icon="🚀",
     layout="wide"
 )
 
-# ============= SESSION STATE INITIALIZATION =============
+# ============= SESSION STATE (LOCK SCREEN SAFE) =============
 if 'last_scan_results' not in st.session_state:
     st.session_state.last_scan_results = None
 if 'last_scan_time' not in st.session_state:
@@ -30,101 +31,98 @@ if 'scan_count' not in st.session_state:
 # ============= IHSG MARKET WIDGET =============
 @st.cache_data(ttl=180)
 def fetch_ihsg_data():
-    """Fetch IHSG (Jakarta Composite Index) data"""
     try:
         import yfinance as yf
         ihsg = yf.Ticker("^JKSE")
         hist = ihsg.history(period="1d")
-
-        if not hist.empty:
-            current = hist['Close'].iloc[-1]
-            open_price = hist['Open'].iloc[-1]
-            high = hist['High'].iloc[-1]
-            low = hist['Low'].iloc[-1]
-            change = current - open_price
-            change_pct = (change / open_price) * 100
-
-            return {
-                'price': current,
-                'change': change,
-                'change_pct': change_pct,
-                'high': high,
-                'low': low,
-                'status': 'up' if change >= 0 else 'down'
-            }
+        if hist.empty:
+            return None
+        current = hist['Close'].iloc[-1]
+        open_price = hist['Open'].iloc[-1]
+        high = hist['High'].iloc[-1]
+        low = hist['Low'].iloc[-1]
+        change = current - open_price
+        change_pct = (change / open_price) * 100
+        return {
+            'price': current,
+            'change': change,
+            'change_pct': change_pct,
+            'high': high,
+            'low': low,
+            'status': 'up' if change >= 0 else 'down'
+        }
     except Exception:
-        pass
-    return None
-
+        return None
 
 def display_ihsg_widget():
-    """Display IHSG market overview widget"""
     ihsg = fetch_ihsg_data()
+    if not ihsg:
+        st.info("📊 IHSG data temporarily unavailable")
+        return
 
-    if ihsg:
-        status_emoji = "🟢" if ihsg['status'] == 'up' else "🔴"
-        status_text = "BULLISH" if ihsg['status'] == 'up' else "BEARISH"
+    status_emoji = "🟢" if ihsg['status'] == 'up' else "🔴"
+    status_text = "BULLISH" if ihsg['status'] == 'up' else "BEARISH"
 
-        # Determine market condition
-        if ihsg['change_pct'] > 1.5:
-            condition = "🔥 Strong uptrend - Good for momentum!"
-            guidance = "✅ Excellent for SPEED/SWING trades"
-        elif ihsg['change_pct'] > 0.5:
-            condition = "📈 Moderate uptrend - Good conditions"
-            guidance = "✅ Good for all strategies"
-        elif ihsg['change_pct'] > -0.5:
-            condition = "➡️ Sideways - Mixed conditions"
-            guidance = "⚠️ Be selective, use tight stops"
-        elif ihsg['change_pct'] > -1.5:
-            condition = "📉 Moderate downtrend - Caution"
-            guidance = "⚠️ Focus on VALUE plays, avoid SPEED"
-        else:
-            condition = "🔻 Strong downtrend - High risk"
-            guidance = "❌ Consider sitting out or very selective"
+    if ihsg['change_pct'] > 1.5:
+        condition = "🔥 Strong uptrend - Good for momentum!"
+        guidance = "✅ Excellent for SPEED/SWING trades"
+    elif ihsg['change_pct'] > 0.5:
+        condition = "📈 Moderate uptrend - Good conditions"
+        guidance = "✅ Good for all strategies"
+    elif ihsg['change_pct'] > -0.5:
+        condition = "➡️ Sideways - Mixed conditions"
+        guidance = "⚠️ Be selective, use tight stops"
+    elif ihsg['change_pct'] > -1.5:
+        condition = "📉 Moderate downtrend - Caution"
+        guidance = "⚠️ Focus on VALUE plays, avoid SPEED"
+    else:
+        condition = "🔻 Strong downtrend - High risk"
+        guidance = "❌ Consider sitting out or very selective"
 
-        st.markdown(f"""
-        <div style='background: linear-gradient(135deg, #1e3a8a 0%, #1e40af 100%); 
-                    padding: 15px; border-radius: 10px; margin-bottom: 20px;
-                    border-left: 5px solid {"#22c55e" if ihsg['status'] == 'up' else "#ef4444"}'>
-            <div style='display: flex; justify-content: space-between; align-items: center;'>
-                <div>
-                    <h3 style='margin: 0; color: white;'>📊 MARKET OVERVIEW</h3>
-                    <p style='margin: 5px 0; color: #e0e7ff; font-size: 0.9em;'>
-                        Jakarta Composite Index
-                    </p>
-                </div>
-                <div style='text-align: right;'>
-                    <h2 style='margin: 0; color: white;'>
-                        {status_emoji} {ihsg['price']:,.2f}
-                    </h2>
-                    <p style='margin: 5px 0; color: {"#22c55e" if ihsg['status'] == 'up' else "#ef4444"}; 
-                              font-size: 1.1em; font-weight: bold;'>
-                        {ihsg['change']:+,.2f} ({ihsg['change_pct']:+.2f}%)
-                    </p>
-                </div>
+    st.markdown(f"""
+    <div style='background: linear-gradient(135deg, #1e3a8a 0%, #1e40af 100%);
+                padding: 15px; border-radius: 10px; margin-bottom: 20px;
+                border-left: 5px solid {"#22c55e" if ihsg['status']=="up" else "#ef4444"}'>
+        <div style='display:flex;justify-content:space-between;align-items:center;'>
+            <div>
+                <h3 style='margin:0;color:white;'>📊 MARKET OVERVIEW</h3>
+                <p style='margin:5px 0;color:#e0e7ff;font-size:0.9em;'>
+                    Jakarta Composite Index
+                </p>
             </div>
-            <div style='margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(255,255,255,0.2);'>
-                <p style='margin: 3px 0; color: #e0e7ff; font-size: 0.85em;'>
-                    📊 High: {ihsg['high']:,.2f} | Low: {ihsg['low']:,.2f} | Status: <strong>{status_text}</strong>
-                </p>
-                <p style='margin: 3px 0; color: #fbbf24; font-size: 0.9em;'>
-                    {condition}
-                </p>
-                <p style='margin: 3px 0; color: #a5b4fc; font-size: 0.85em;'>
-                    {guidance}
-                </p>
-                <p style='margin: 5px 0 0 0; color: #94a3b8; font-size: 0.75em;'>
-                    ⏰ Last update: {datetime.now().strftime('%H:%M:%S')} WIB | 🔄 Auto-refresh: 3 min
+            <div style='text-align:right;'>
+                <h2 style='margin:0;color:white;'>
+                    {status_emoji} {ihsg['price']:,.2f}
+                </h2>
+                <p style='margin:5px 0;color:{"#22c55e" if ihsg['status']=="up" else "#ef4444"};
+                          font-size:1.1em;font-weight:bold;'>
+                    {ihsg['change']:+,.2f} ({ihsg['change_pct']:+.2f}%)
                 </p>
             </div>
         </div>
-        """, unsafe_allow_html=True)
-    else:
-        st.info("📊 IHSG data temporarily unavailable")
+        <div style='margin-top:10px;padding-top:10px;border-top:1px solid rgba(255,255,255,0.2);'>
+            <p style='margin:3px 0;color:#e0e7ff;font-size:0.85em;'>
+                📊 High: {ihsg['high']:,.2f} | Low: {ihsg['low']:,.2f} | Status: <strong>{status_text}</strong>
+            </p>
+            <p style='margin:3px 0;color:#fbbf24;font-size:0.9em;'>
+                {condition}
+            </p>
+            <p style='margin:3px 0;color:#a5b4fc;font-size:0.85em;'>
+                {guidance}
+            </p>
+            <p style='margin:5px 0 0 0;color:#94a3b8;font-size:0.75em;'>
+                ⏰ Last update: {datetime.now().strftime('%H:%M:%S')} WIB | 🔄 Auto-refresh: 3 min
+            </p>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
-
-# ============= LOAD TICKERS =============
+# ============= TICKERS =============
 def load_tickers():
+    """
+    Kalau kakak punya list IDX lengkap, boleh ganti isi fungsi ini
+    dengan fungsi lama kakak. Logika lain tetap sama.
+    """
     try:
         if os.path.exists("idx_stocks.json"):
             with open("idx_stocks.json", "r") as f:
@@ -134,104 +132,26 @@ def load_tickers():
     except Exception:
         pass
 
-    return ["AALI.JK","ABBA.JK","ABMM.JK","ACES.JK","ADRO.JK","AGII.JK","AGRO.JK","AIMS.JK",
-            "AKKU.JK","AKPI.JK","AKRA.JK","AKSI.JK","ALDO.JK","ALKA.JK","ALMI.JK","ALTO.JK",
-            "AMMN.JK","AMRT.JK","ANDI.JK","ANTM.JK","APLI.JK","APLN.JK","ARGO.JK","ARII.JK",
-            "ARNA.JK","ARTA.JK","ARTI.JK","ASII.JK","ASMI.JK","ASPI.JK","ASRI.JK","ASSA.JK",
-            "AUTO.JK","AVIA.JK","AYLS.JK","BABP.JK","BAJA.JK","BBCA.JK","BBHI.JK","BBKP.JK",
-            "BBNI.JK","BBRI.JK","BBTN.JK","BCAP.JK","BCIP.JK","BDMN.JK","BEEF.JK","BELL.JK",
-            "BEST.JK","BFIN.JK","BGTG.JK","BHAT.JK","BHIT.JK","BIKA.JK","BIMA.JK","BIPP.JK",
-            "BIRD.JK","BISI.JK","BJBR.JK","BJTM.JK","BLTA.JK","BLTZ.JK","BLUE.JK","BMAS.JK",
-            "BMRI.JK","BMSR.JK","BMTR.JK","BNBA.JK","BNGA.JK","BNII.JK","BNLI.JK","BOGA.JK",
-            "BOLT.JK","BOSS.JK","BPFI.JK","BPTR.JK","BRAM.JK","BREN.JK","BRIS.JK","BRMS.JK",
-            "BRNA.JK","BRPT.JK","BSDE.JK","BSIM.JK","BSSR.JK","BTEK.JK","BTEL.JK","BTPN.JK",
-            "BTPS.JK","BUDI.JK","BUKA.JK","BULL.JK","BUMI.JK","BUVA.JK","BVIC.JK","BWPT.JK",
-            "BYAN.JK","CAKK.JK","CAMP.JK","CANI.JK","CARE.JK","CARS.JK","CASA.JK","CASS.JK",
-            "CEKA.JK","CENT.JK","CFIN.JK","CINT.JK","CITA.JK","CITY.JK","CKRA.JK","CLAY.JK",
-            "CLPI.JK","CMNP.JK","CMNT.JK","COAL.JK","COCO.JK","COWL.JK","CPIN.JK","CPRI.JK",
-            "CPRO.JK","CSAP.JK","CTBN.JK","CTRA.JK","CTTH.JK","DADA.JK","DAYA.JK","DCII.JK",
-            "DEWA.JK","DGIK.JK","DGNS.JK","DIGI.JK","DILD.JK","DIVA.JK","DLTA.JK","DMAS.JK",
-            "DMND.JK","DNAR.JK","DNET.JK","DOID.JK","DPNS.JK","DPUM.JK","DRMA.JK","DSSA.JK",
-            "DUCK.JK","DVLA.JK","DYAN.JK","EAST.JK","ECII.JK","EDGE.JK","EKAD.JK","ELSA.JK",
-            "ELTY.JK","EMDE.JK","EMTK.JK","ENRG.JK","ENVY.JK","EPMT.JK","ERAA.JK","ESSA.JK",
-            "ESTE.JK","EURO.JK","EXCL.JK","FAST.JK","FILM.JK","FINN.JK","FIRE.JK","FISH.JK",
-            "FITT.JK","FOOD.JK","FORU.JK","FPNI.JK","FREN.JK","FUJI.JK","GADO.JK","GEMA.JK",
-            "GEMS.JK","GGRM.JK","GGRP.JK","GHON.JK","GIAA.JK","GJTL.JK","GMFI.JK","GMTD.JK",
-            "GOLD.JK","GOLL.JK","GOOD.JK","GOTO.JK","GPRA.JK","GRIA.JK","GSMF.JK","GWSA.JK",
-            "HADE.JK","HAIS.JK","HEAL.JK","HERO.JK","HEXA.JK","HILL.JK","HMSP.JK","HOME.JK",
-            "HOMI.JK","HOPE.JK","HOTL.JK","HRME.JK","HRTA.JK","HRUM.JK","IATA.JK","IBST.JK",
-            "ICBP.JK","ICON.JK","IDEA.JK","IFII.JK","IGAR.JK","IIKP.JK","IKAI.JK","IKAN.JK",
-            "IKBI.JK","IMAS.JK","IMJS.JK","IMPC.JK","INAF.JK","INAR.JK","INCO.JK","INDF.JK",
-            "INDO.JK","INDR.JK","INDS.JK","INET.JK","INOV.JK","INPC.JK","INPP.JK","INPS.JK",
-            "INRU.JK","INTA.JK","INTD.JK","INTP.JK","IPAC.JK","IPCC.JK","IPCM.JK","IPOL.JK",
-            "IPPE.JK","IPTV.JK","IRRA.JK","ISAT.JK","ISSP.JK","ITMA.JK","ITMG.JK","JAST.JK",
-            "JAWA.JK","JAYA.JK","JECC.JK","JGLE.JK","JKON.JK","JKSW.JK","JMAS.JK","JMTO.JK",
-            "JPFA.JK","JPRT.JK","JRPT.JK","JSKY.JK","JSMR.JK","JSPT.JK","JTPE.JK","KAEF.JK",
-            "KARW.JK","KAYU.JK","KBAG.JK","KBLI.JK","KBLM.JK","KBLV.JK","KBRI.JK","KDSI.JK",
-            "KEEN.JK","KEJU.JK","KIAS.JK","KICI.JK","KIJA.JK","KINO.JK","KIOS.JK","KJEN.JK",
-            "KKGI.JK","KLBF.JK","KOBX.JK","KOIN.JK","KOKA.JK","KONI.JK","KOPI.JK","KOTA.JK",
-            "KPAS.JK","KPIG.JK","KRAH.JK","KRAS.JK","KREN.JK","LAND.JK","LAPD.JK","LAUT.JK",
-            "LEAD.JK","LIFE.JK","LINK.JK","LION.JK","LMAS.JK","LMPI.JK","LMSH.JK","LPCK.JK",
-            "LPGI.JK","LPIN.JK","LPKR.JK","LPLI.JK","LPPF.JK","LPPS.JK","LRNA.JK","LSIP.JK",
-            "LTLS.JK","LUCK.JK","MAIN.JK","MAMI.JK","MANM.JK","MAPB.JK","MAPI.JK","MARK.JK",
-            "MASB.JK","MAYA.JK","MBAP.JK","MBMA.JK","MBSS.JK","MBTO.JK","MCAS.JK","MCOL.JK",
-            "MCOR.JK","MDIA.JK","MDKA.JK","MDKI.JK","MDLN.JK","MDRN.JK","MEDC.JK","MEDP.JK",
-            "MEGA.JK","MERK.JK","META.JK","MFIN.JK","MFMI.JK","MGNA.JK","MGLV.JK","MGRO.JK",
-            "MICE.JK","MIDI.JK","MIKA.JK","MINA.JK","MITI.JK","MKNT.JK","MKPI.JK","MLBI.JK",
-            "MLIA.JK","MLPL.JK","MLPT.JK","MMLP.JK","MNCN.JK","MOLI.JK","MPMX.JK","MPPA.JK",
-            "MPRO.JK","MRAT.JK","MREI.JK","MRSV.JK","MSJA.JK","MSKY.JK","MTDL.JK","MTFN.JK",
-            "MTLA.JK","MTRA.JK","MTSM.JK","MYOH.JK","MYOR.JK","MYRX.JK","NASA.JK","NASI.JK",
-            "NATO.JK","NCKL.JK","NETV.JK","NFCX.JK","NICK.JK","NIPS.JK","NISP.JK","NOBU.JK",
-            "NRCA.JK","NUSA.JK","OASA.JK","OBMD.JK","OCAP.JK","OILS.JK","OKUR.JK","OMRE.JK",
-            "OOMA.JK","OPLK.JK","OPMS.JK","PACK.JK","PALM.JK","PANI.JK","PANR.JK","PANS.JK",
-            "PCAR.JK","PBRX.JK","PDES.JK","PEHA.JK","PEJA.JK","PENS.JK","PGAS.JK","PGEO.JK",
-            "PGLI.JK","PGUN.JK","PICO.JK","PJAA.JK","PKPK.JK","PLAN.JK","PLIN.JK","PNBN.JK",
-            "PNBS.JK","PNGO.JK","PNIN.JK","PNLF.JK","PNSE.JK","POWR.JK","PPGL.JK","PPRE.JK",
-            "PPRO.JK","PRAS.JK","PRDA.JK","PRIM.JK","PSAB.JK","PSDN.JK","PSGO.JK","PSKT.JK",
-            "PSSI.JK","PTBA.JK","PTDU.JK","PTMP.JK","PTPP.JK","PTPW.JK","PTRO.JK","PTSN.JK",
-            "PUDP.JK","PURA.JK","PURE.JK","PURW.JK","PWON.JK","PWSI.JK","PYFA.JK","PZZA.JK",
-            "RAJA.JK","RALS.JK","RANC.JK","RBMS.JK","RDTX.JK","REAL.JK","RELI.JK","RICY.JK",
-            "RIGS.JK","RISE.JK","RMBA.JK","RIMO.JK","ROCK.JK","RODA.JK","RONY.JK","ROTI.JK",
-            "SAFE.JK","SAME.JK","SAMF.JK","SAPX.JK","SATU.JK","SBAT.JK","SBMA.JK","SCCO.JK",
-            "SCMA.JK","SCNP.JK","SCPI.JK","SDMU.JK","SDPC.JK","SDRA.JK","SGRO.JK","SHID.JK",
-            "SHIP.JK","SILO.JK","SIMA.JK","SIMP.JK","SINI.JK","SIPD.JK","SKBM.JK","SKLT.JK",
-            "SKRN.JK","SKYB.JK","SLIS.JK","SMAR.JK","SMBR.JK","SMCB.JK","SMDM.JK","SMDR.JK",
-            "SMGR.JK","SMKL.JK","SMMA.JK","SMMT.JK","SMRA.JK","SMRU.JK","SMSM.JK","SNOW.JK",
-            "SOBI.JK","SOCI.JK","SOHO.JK","SONA.JK","SOSS.JK","SOTS.JK","SOVA.JK","SPMA.JK",
-            "SPTO.JK","SQMI.JK","SRAJ.JK","SRNA.JK","SRSN.JK","SRTG.JK","SSIA.JK","SSMS.JK",
-            "SSTM.JK","STAR.JK","STTP.JK","SUGI.JK","SULI.JK","SUNI.JK","SURE.JK","SWAT.JK",
-            "SWIN.JK","TALF.JK","TALL.JK","TAMA.JK","TANK.JK","TAPG.JK","TARA.JK","TAXI.JK",
-            "TBIG.JK","TBLA.JK","TBMS.JK","TCID.JK","TEBE.JK","TECH.JK","TENT.JK","TFAS.JK",
-            "TFCO.JK","TGKA.JK","TGRA.JK","TINS.JK","TIRA.JK","TIRT.JK","TKIM.JK","TKRN.JK",
-            "TLKM.JK","TMAS.JK","TMPO.JK","TNCA.JK","TOBA.JK","TOSK.JK","TOTL.JK","TOTO.JK",
-            "TOUR.JK","TOYS.JK","TPIA.JK","TPMA.JK","TRJA.JK","TRIL.JK","TRIM.JK","TRIN.JK",
-            "TRIO.JK","TRIS.JK","TRST.JK","TRUE.JK","TRUK.JK","TSPC.JK","TUGU.JK","TURI.JK",
-            "UANG.JK","UBIX.JK","UCID.JK","UGRO.JK","ULTJ.JK","UNIC.JK","UNIQ.JK","UNIT.JK",
-            "UNSP.JK","UNTR.JK","UNVR.JK","URBN.JK","UVCR.JK","VICO.JK","VINS.JK","VIVA.JK",
-            "VKTR.JK","VRNA.JK","WAPO.JK","WARA.JK","WEGE.JK","WEHA.JK","WICO.JK","WIFI.JK",
-            "WIIM.JK","WINS.JK","WIRA.JK","WMPP.JK","WMUU.JK","WOOD.JK","WOWS.JK","WPAK.JK",
-            "WRNA.JK","WSBP.JK","WSKT.JK","WTON.JK","YELO.JK","YPAS.JK","YULE.JK","ZBRA.JK",
-            "ZINC.JK","ZONE.JK"]
+    # fallback contoh (boleh ditambah sendiri)
+    base = ["BBCA.JK","BBRI.JK","BMRI.JK","ASII.JK","TLKM.JK",
+            "BBNI.JK","BRPT.JK","BUMI.JK","BUKA.JK","BREN.JK",
+            "PGAS.JK","PTBA.JK","MDKA.JK","RAJA.JK","RATU.JK",
+            "CDIA.JK","COAL.JK","PGUN.JK","TEBE.JK","COIN.JK"]
+    return base
 
-
-# ============= TIME HELPERS =============
 def get_jakarta_time():
     return datetime.now(timezone(timedelta(hours=7)))
-
 
 def is_bpjs_time():
     jkt_hour = get_jakarta_time().hour
     return 9 <= jkt_hour < 10
 
-
 def is_bsjp_time():
     jkt_hour = get_jakarta_time().hour
     return 14 <= jkt_hour < 16
 
-
-# ============= CHART VISUALIZATION =============
+# ============= CHART =============
 def create_chart(df, ticker, period_days=30):
-    """Create interactive chart with technical indicators"""
     try:
         df_chart = df.tail(period_days).copy()
 
@@ -243,7 +163,6 @@ def create_chart(df, ticker, period_days=30):
             subplot_titles=(f'{ticker} - Price & EMAs', 'Volume', 'RSI')
         )
 
-        # Candlestick
         fig.add_trace(
             go.Candlestick(
                 x=df_chart.index,
@@ -258,7 +177,6 @@ def create_chart(df, ticker, period_days=30):
             row=1, col=1
         )
 
-        # EMAs
         colors = {'EMA9': '#2196F3', 'EMA21': '#FF9800',
                   'EMA50': '#F44336', 'EMA200': '#9E9E9E'}
         for ema in ['EMA9', 'EMA21', 'EMA50', 'EMA200']:
@@ -273,7 +191,6 @@ def create_chart(df, ticker, period_days=30):
                     row=1, col=1
                 )
 
-        # Volume bars
         colors_vol = ['#ef5350' if df_chart['Close'].iloc[i] < df_chart['Open'].iloc[i]
                       else '#26a69a' for i in range(len(df_chart))]
         fig.add_trace(
@@ -287,7 +204,6 @@ def create_chart(df, ticker, period_days=30):
             row=2, col=1
         )
 
-        # RSI
         fig.add_trace(
             go.Scatter(
                 x=df_chart.index,
@@ -298,12 +214,9 @@ def create_chart(df, ticker, period_days=30):
             row=3, col=1
         )
 
-        fig.add_hline(y=70, line_dash="dash",
-                      line_color="red", opacity=0.5, row=3, col=1)
-        fig.add_hline(y=30, line_dash="dash",
-                      line_color="green", opacity=0.5, row=3, col=1)
-        fig.add_hline(y=50, line_dash="dot",
-                      line_color="gray", opacity=0.3, row=3, col=1)
+        fig.add_hline(y=70, line_dash="dash", line_color="red", opacity=0.5, row=3, col=1)
+        fig.add_hline(y=30, line_dash="dash", line_color="green", opacity=0.5, row=3, col=1)
+        fig.add_hline(y=50, line_dash="dot", line_color="gray", opacity=0.3, row=3, col=1)
 
         fig.update_layout(
             height=700,
@@ -319,34 +232,28 @@ def create_chart(df, ticker, period_days=30):
                 x=1
             )
         )
-
         fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor='#333')
         fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='#333')
-
         return fig
     except Exception:
         return None
-
 
 # ============= FETCH DATA =============
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_data(ticker, period="6mo"):
     try:
         end = int(datetime.now().timestamp())
-        days = {"5d": 5, "1mo": 30, "3mo": 90, "6mo": 180, "1y": 365}.get(period, 180)
-        start = end - (days * 86400)
-
+        days = {"5d":5,"1mo":30,"3mo":90,"6mo":180,"1y":365}.get(period,180)
+        start = end - (days*86400)
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
         r = requests.get(
             url,
-            params={"period1": start, "period2": end, "interval": "1d"},
-            headers={'User-Agent': 'Mozilla/5.0'},
+            params={"period1":start,"period2":end,"interval":"1d"},
+            headers={'User-Agent':'Mozilla/5.0'},
             timeout=10
         )
-
         if r.status_code != 200:
             return None
-
         data = r.json()
         result = data['chart']['result'][0]
         q = result['indicators']['quote'][0]
@@ -367,18 +274,14 @@ def fetch_data(ticker, period="6mo"):
         df['EMA9'] = df['Close'].ewm(span=9, adjust=False).mean()
         df['EMA21'] = df['Close'].ewm(span=21, adjust=False).mean()
         df['EMA50'] = df['Close'].ewm(span=50, adjust=False).mean()
-        df['EMA200'] = (
-            df['Close'].ewm(span=200, adjust=False).mean()
-            if len(df) >= 200
-            else df['Close'].ewm(span=len(df), adjust=False).mean()
-        )
+        df['EMA200'] = df['Close'].ewm(span=200, adjust=False).mean() if len(df)>=200 else df['Close'].ewm(span=len(df), adjust=False).mean()
 
         # RSI
         delta = df['Close'].diff()
-        gain = delta.where(delta > 0, 0).rolling(14).mean()
-        loss = -delta.where(delta < 0, 0).rolling(14).mean()
+        gain = delta.where(delta>0,0).rolling(14).mean()
+        loss = -delta.where(delta<0,0).rolling(14).mean()
         rs = gain / loss.replace(0, np.nan)
-        df['RSI'] = 100 - (100 / (1 + rs))
+        df['RSI'] = 100 - (100/(1+rs))
 
         # Volume analysis
         df['VOL_SMA20'] = df['Volume'].rolling(20).mean()
@@ -386,14 +289,11 @@ def fetch_data(ticker, period="6mo"):
         df['VOL_RATIO'] = df['Volume'] / df['VOL_SMA20']
 
         # Momentum
-        df['MOM_5D'] = ((df['Close'] - df['Close'].shift(5)) /
-                        df['Close'].shift(5)) * 100
-        df['MOM_10D'] = ((df['Close'] - df['Close'].shift(10)) /
-                         df['Close'].shift(10)) * 100
-        df['MOM_20D'] = ((df['Close'] - df['Close'].shift(20)) /
-                         df['Close'].shift(20)) * 100
+        df['MOM_5D'] = ((df['Close'] - df['Close'].shift(5)) / df['Close'].shift(5)) * 100
+        df['MOM_10D'] = ((df['Close'] - df['Close'].shift(10)) / df['Close'].shift(10)) * 100
+        df['MOM_20D'] = ((df['Close'] - df['Close'].shift(20)) / df['Close'].shift(20)) * 100
 
-        # OBV for Wyckoff
+        # OBV
         obv = [0]
         for i in range(1, len(df)):
             if df['Close'].iloc[i] > df['Close'].iloc[i-1]:
@@ -410,8 +310,7 @@ def fetch_data(ticker, period="6mo"):
         df['BB_STD'] = df['Close'].rolling(20).std()
         df['BB_UPPER'] = df['BB_MID'] + 2*df['BB_STD']
         df['BB_LOWER'] = df['BB_MID'] - 2*df['BB_STD']
-        df['BB_WIDTH'] = ((df['BB_UPPER'] - df['BB_LOWER']) /
-                          df['BB_MID']) * 100
+        df['BB_WIDTH'] = ((df['BB_UPPER'] - df['BB_LOWER']) / df['BB_MID']) * 100
 
         # Stochastic
         low14 = df['Low'].rolling(14).min()
@@ -419,7 +318,7 @@ def fetch_data(ticker, period="6mo"):
         df['STOCH_K'] = 100*(df['Close']-low14)/(high14-low14)
         df['STOCH_D'] = df['STOCH_K'].rolling(3).mean()
 
-        # ATR for volatility
+        # ATR
         tr1 = df['High'] - df['Low']
         tr2 = abs(df['High'] - df['Close'].shift())
         tr3 = abs(df['Low'] - df['Close'].shift())
@@ -438,10 +337,8 @@ def fetch_data(ticker, period="6mo"):
     except Exception:
         return None
 
-
-# ============= PRE-FILTERS =============
+# ============= PREFILTER LIQUIDITY =============
 def apply_liquidity_filter(df, ticker):
-    """Strict liquidity requirements"""
     try:
         r = df.iloc[-1]
         price = r['Close']
@@ -461,52 +358,40 @@ def apply_liquidity_filter(df, ticker):
     except Exception:
         return False, "Error"
 
-
-# ============= ENHANCED SCORING FUNCTIONS =============
+# ============= SCORING (PERSIS DENGAN V4.5) =============
 def score_general(df):
-    """ULTRA STRICT General Swing Trading Scoring - v4.2"""
     try:
         r = df.iloc[-1]
         score = 0
         details = {}
-        # rejection_reasons = []
 
-        # === CRITICAL FILTERS (AUTO-REJECT) ===
-
-        # 1. Liquidity check
         passed, reason = apply_liquidity_filter(df, "")
         if not passed:
             return 0, {"Rejected": reason}, 0, "F"
 
-        # 2. Strong downtrend rejection (STRICTER)
         if r['Close'] < r['EMA21'] < r['EMA50'] < r['EMA200']:
             return 0, {"Rejected": "Strong downtrend"}, 0, "F"
 
-        # 3. Weak positioning - below key EMAs
         if r['Close'] < r['EMA50']:
             return 0, {"Rejected": "Below EMA50"}, 0, "F"
 
-        # 4. MANDATORY: Negative momentum rejection (NEW!)
         mom_20d = r['MOM_20D']
         if mom_20d < -8:
             return 0, {"Rejected": f"Strong negative momentum ({mom_20d:.1f}%)"}, 0, "F"
 
-        # 5. MANDATORY: Weak volume rejection (NEW!)
         vol_ratio = r['VOL_RATIO']
         if vol_ratio < 1.0:
             return 0, {"Rejected": f"Insufficient volume ({vol_ratio:.1f}x)"}, 0, "F"
 
-        # === MOMENTUM PENALTY (for -5% to -8%) ===
         if -8 <= mom_20d < -5:
-            momentum_penalty = 0.6  # 40% penalty
+            momentum_penalty = 0.6
             details['⚠️ Warning'] = f'Weak momentum {mom_20d:.1f}%'
         elif -5 <= mom_20d < 0:
-            momentum_penalty = 0.8  # 20% penalty
+            momentum_penalty = 0.8
             details['⚠️ Warning'] = f'Slight negative momentum {mom_20d:.1f}%'
         else:
-            momentum_penalty = 1.0  # No penalty
+            momentum_penalty = 1.0
 
-        # === TREND STRENGTH (40 points max) ===
         ema_alignment = 0
         if r['EMA9'] > r['EMA21']:
             ema_alignment += 1
@@ -527,10 +412,8 @@ def score_general(df):
             score += 10
             details['Trend'] = '🟠 Moderate'
         else:
-            score += 0
             details['Trend'] = '🔴 Weak'
 
-        # === RSI (25 points max) ===
         rsi = r['RSI']
         if 50 <= rsi <= 65:
             score += 25
@@ -542,16 +425,13 @@ def score_general(df):
             score += 10
             details['RSI'] = f'🟠 OK {rsi:.0f}'
         elif rsi > 70:
-            score += 0
             details['RSI'] = f'🔴 Overbought {rsi:.0f}'
         elif rsi < 35:
-            score += 0
             details['RSI'] = f'🔴 Oversold {rsi:.0f}'
         else:
             score += 5
             details['RSI'] = f'⚪ Neutral {rsi:.0f}'
 
-        # === VOLUME (20 points max) ===
         vol_ratio = r['VOL_RATIO']
         if vol_ratio > 2.0:
             score += 20
@@ -563,13 +443,10 @@ def score_general(df):
             score += 5
             details['Volume'] = f'🟠 Normal {vol_ratio:.1f}x'
         else:
-            score += 0
             details['Volume'] = f'🔴 Weak {vol_ratio:.1f}x'
 
-        # === MOMENTUM (15 points max) ===
         mom_5d = r['MOM_5D']
         mom_10d = r['MOM_10D']
-        mom_20d = r['MOM_20D']
 
         if mom_5d > 3 and mom_10d > 5:
             score += 15
@@ -586,7 +463,6 @@ def score_general(df):
 
         score = int(score * momentum_penalty)
 
-        # === GRADE CALCULATION ===
         if score >= 85:
             grade = "A+"
             conf = 85
@@ -610,24 +486,19 @@ def score_general(df):
     except Exception as e:
         return 0, {"Error": str(e)}, 0, "F"
 
-
 def score_bpjs(df):
-    """Enhanced BPJS (Day Trading) Scoring"""
     try:
         r = df.iloc[-1]
         score = 0
         details = {}
 
-        # Liquidity check
         passed, reason = apply_liquidity_filter(df, "")
         if not passed:
             return 0, {"Rejected": reason}, 0, "F"
 
-        # Must be above EMA50 (trend confirmation)
         if r['Close'] < r['EMA50']:
             return 0, {"Rejected": "Below EMA50 - No uptrend"}, 0, "F"
 
-        # === VOLATILITY (35 points) ===
         atr_pct = r['ATR_PCT']
         if 2.5 < atr_pct < 5:
             score += 35
@@ -636,13 +507,10 @@ def score_bpjs(df):
             score += 20
             details['Volatility'] = f'🟡 Good {atr_pct:.1f}%'
         elif atr_pct >= 6:
-            score += 0
             details['Volatility'] = f'🔴 Too high {atr_pct:.1f}%'
         else:
-            score += 0
             details['Volatility'] = f'🔴 Too low {atr_pct:.1f}%'
 
-        # === VOLUME SURGE (30 points) ===
         if r['VOL_RATIO'] > 3.0:
             score += 30
             details['Volume'] = f'🟢 HUGE {r["VOL_RATIO"]:.1f}x'
@@ -655,7 +523,6 @@ def score_bpjs(df):
         else:
             return 0, {"Rejected": "Insufficient volume"}, 0, "F"
 
-        # === RSI OVERSOLD (20 points) ===
         if 30 < r['RSI'] < 40:
             score += 20
             details['RSI'] = f"🟢 Oversold {r['RSI']:.0f}"
@@ -663,10 +530,8 @@ def score_bpjs(df):
             score += 10
             details['RSI'] = f"🟡 OK {r['RSI']:.0f}"
         else:
-            score += 0
             details['RSI'] = f"🔴 Not oversold {r['RSI']:.0f}"
 
-        # === STOCHASTIC (15 points) ===
         if r['STOCH_K'] < 30:
             score += 15
             details['Stoch'] = f"🟢 Oversold {r['STOCH_K']:.0f}"
@@ -686,29 +551,23 @@ def score_bpjs(df):
         else:
             grade = "D"
             conf = max(score, 0)
-
         return score, details, conf, grade
     except Exception:
         return 0, {}, 0, "F"
 
-
 def score_bsjp(df):
-    """Enhanced BSJP (Overnight) Scoring"""
     try:
         r = df.iloc[-1]
         score = 0
         details = {}
 
-        # Liquidity check
         passed, reason = apply_liquidity_filter(df, "")
         if not passed:
             return 0, {"Rejected": reason}, 0, "F"
 
-        # Must have uptrend context
         if r['Close'] < r['EMA50']:
             return 0, {"Rejected": "No uptrend"}, 0, "F"
 
-        # === BB POSITION (35 points) ===
         bb_pos = ((r['Close'] - r['BB_LOWER']) / (r['BB_UPPER'] - r['BB_LOWER'])) * 100
         if bb_pos < 20:
             score += 35
@@ -717,10 +576,8 @@ def score_bsjp(df):
             score += 20
             details['BB'] = f'🟡 Below mid {bb_pos:.0f}%'
         else:
-            score += 0
             details['BB'] = f'🔴 Too high {bb_pos:.0f}%'
 
-        # === GAP DOWN (30 points) ===
         gap = ((r['Close'] - df['Close'].iloc[-2]) / df['Close'].iloc[-2]) * 100
         if -4 < gap < -1:
             score += 30
@@ -729,13 +586,10 @@ def score_bsjp(df):
             score += 15
             details['Gap'] = f'🟡 Small {gap:.1f}%'
         elif gap < -4:
-            score += 0
             details['Gap'] = f'🔴 Too large {gap:.1f}%'
         else:
-            score += 0
             details['Gap'] = f'⚪ No gap {gap:.1f}%'
 
-        # === RSI (20 points) ===
         if 25 < r['RSI'] < 40:
             score += 20
             details['RSI'] = f"🟢 Oversold {r['RSI']:.0f}"
@@ -743,7 +597,6 @@ def score_bsjp(df):
             score += 10
             details['RSI'] = f"🟡 OK {r['RSI']:.0f}"
 
-        # === VOLUME (15 points) ===
         if r['VOL_RATIO'] > 1.5:
             score += 15
             details['Volume'] = f"🟢 Strong {r['VOL_RATIO']:.1f}x"
@@ -763,14 +616,11 @@ def score_bsjp(df):
         else:
             grade = "D"
             conf = max(score, 0)
-
         return score, details, conf, grade
     except Exception:
         return 0, {}, 0, "F"
 
-
 def score_bandar(df):
-    """Enhanced Wyckoff Bandar Detection"""
     try:
         r = df.iloc[-1]
         score = 0
@@ -786,10 +636,10 @@ def score_bandar(df):
         price_chg_20d = ((r['Close'] - df['Close'].iloc[-20]) / df['Close'].iloc[-20]) * 100
         price_chg_5d = ((r['Close'] - df['Close'].iloc[-5]) / df['Close'].iloc[-5]) * 100
 
-        obv_chg = (
-            (df['OBV'].iloc[-1] - df['OBV'].iloc[-20]) / abs(df['OBV'].iloc[-20])
-            if df['OBV'].iloc[-20] != 0 else 0
-        )
+        if df['OBV'].iloc[-20] != 0:
+            obv_chg = ((df['OBV'].iloc[-1] - df['OBV'].iloc[-20]) / abs(df['OBV'].iloc[-20]))
+        else:
+            obv_chg = 0
         obv_vs_ema = df['OBV'].iloc[-1] > df['OBV_EMA'].iloc[-1]
 
         if (vol_ratio_10d > 1.3 and
@@ -803,7 +653,6 @@ def score_bandar(df):
             details['Phase'] = 'Accumulation Zone'
             details['Signal'] = 'STRONG BUY'
             details['Action'] = 'Enter position'
-
         elif (price_chg_20d > 8 and
               obv_chg > 0.1 and
               r['Close'] > r['EMA9'] > r['EMA21']):
@@ -813,7 +662,6 @@ def score_bandar(df):
             details['Phase'] = 'Markup Phase'
             details['Signal'] = 'HOLD/TRAIL'
             details['Action'] = 'Trail stop'
-
         elif (vol_ratio_recent > 2.0 and
               price_chg_5d < -2 and
               (r['RSI'] > 70 or price_chg_20d > 15)):
@@ -823,7 +671,6 @@ def score_bandar(df):
             details['Phase'] = 'Distribution Zone'
             details['Signal'] = 'SELL/AVOID'
             details['Action'] = 'Exit now'
-
         elif (r['Close'] < r['EMA50'] and obv_chg < -0.1):
             phase = "⚫ MARKDOWN"
             score = 10
@@ -851,14 +698,11 @@ def score_bandar(df):
             grade = "C"
         else:
             grade = "D"
-
         return score, details, conf, grade
     except Exception as e:
         return 0, {"Error": str(e)}, 0, "F"
 
-
 def score_swing(df):
-    """Swing Trader Scoring (3-5 days holding)"""
     try:
         r = df.iloc[-1]
         score = 0
@@ -880,14 +724,10 @@ def score_swing(df):
             return 0, {"Rejected": f"Weak volume ({r['VOL_RATIO']:.1f}x)"}, 0, "F"
 
         ema_alignment = 0
-        if r['EMA9'] > r['EMA21']:
-            ema_alignment += 1
-        if r['EMA21'] > r['EMA50']:
-            ema_alignment += 1
-        if r['EMA50'] > r['EMA200']:
-            ema_alignment += 1
-        if r['Close'] > r['EMA9']:
-            ema_alignment += 1
+        if r['EMA9'] > r['EMA21']: ema_alignment += 1
+        if r['EMA21'] > r['EMA50']: ema_alignment += 1
+        if r['EMA50'] > r['EMA200']: ema_alignment += 1
+        if r['Close'] > r['EMA9']: ema_alignment += 1
 
         if ema_alignment == 4:
             score += 35
@@ -941,14 +781,11 @@ def score_swing(df):
             grade, conf = "B", 55
         else:
             grade, conf = "C", max(score, 0)
-
         return score, details, conf, grade
     except Exception:
         return 0, {}, 0, "F"
 
-
 def score_value(df):
-    """Value Plays Scoring (Undervalued stocks with potential)"""
     try:
         r = df.iloc[-1]
         price = r['Close']
@@ -965,53 +802,42 @@ def score_value(df):
         if r['Close'] < r['EMA200']:
             return 0, {"Rejected": "Below 200 EMA"}, 0, "F"
 
-        undervalued_score = 0
-
         dist_to_ema50 = ((r['Close'] - r['EMA50']) / r['EMA50']) * 100
-        bb_position = ((r['Close'] - r['BB_LOWER']) /
-                       (r['BB_UPPER'] - r['BB_LOWER'])) * 100
+        bb_position = ((r['Close'] - r['BB_LOWER']) / (r['BB_UPPER'] - r['BB_LOWER'])) * 100
 
         if -5 < dist_to_ema50 < 3:
-            undervalued_score += 20
+            score += 20
             details['Support'] = f'🟢 Near EMA50 ({dist_to_ema50:+.1f}%)'
         elif bb_position < 25:
-            undervalued_score += 20
+            score += 20
             details['Support'] = f'🟢 Near BB lower ({bb_position:.0f}%)'
         elif -10 < dist_to_ema50 < 5:
-            undervalued_score += 10
+            score += 10
             details['Support'] = f'🟡 Approaching EMA50'
 
         rsi = r['RSI']
         if rsi < 35:
-            undervalued_score += 20
+            score += 20
             details['RSI'] = f'🟢 Oversold {rsi:.0f}'
         elif rsi < 45:
-            undervalued_score += 10
+            score += 10
             details['RSI'] = f'🟡 Low {rsi:.0f}'
-
-        score += undervalued_score
-
-        reversal_score = 0
 
         vol_trend = df['Volume'].tail(5).mean() / df['VOL_SMA20'].iloc[-1]
         if vol_trend > 1.3:
-            reversal_score += 20
+            score += 20
             details['Volume'] = f'🟢 Increasing {vol_trend:.1f}x'
         elif vol_trend > 1.0:
-            reversal_score += 10
+            score += 10
             details['Volume'] = f'🟡 Normal {vol_trend:.1f}x'
 
-        green_candles = sum(
-            1 for i in range(-5, 0) if df['Close'].iloc[i] > df['Open'].iloc[i]
-        )
+        green_candles = sum(1 for i in range(-5, 0) if df['Close'].iloc[i] > df['Open'].iloc[i])
         if green_candles >= 3:
-            reversal_score += 15
+            score += 15
             details['Pattern'] = f'🟢 {green_candles}/5 green candles'
         elif green_candles >= 2:
-            reversal_score += 8
+            score += 8
             details['Pattern'] = f'🟡 {green_candles}/5 green candles'
-
-        score += reversal_score
 
         if price < 500:
             score += 25
@@ -1031,15 +857,102 @@ def score_value(df):
             grade, conf = "B", 60
         else:
             grade, conf = "C", max(score, 0)
-
         return score, details, conf, grade
     except Exception:
         return 0, {}, 0, "F"
 
+# ============= TREND, SIGNAL & TRADE PLAN =============
+def detect_trend(last_row):
+    price = float(last_row['Close'])
+    ema9  = float(last_row['EMA9'])
+    ema21 = float(last_row['EMA21'])
+    ema50 = float(last_row['EMA50'])
+    ema200 = float(last_row['EMA200'])
 
-# ============= PROCESS / LEVELS =============
+    if price > ema9 > ema21 > ema50 > ema200:
+        return "Strong Uptrend"
+    elif price > ema50 and ema9 > ema21 > ema50:
+        return "Uptrend"
+    elif abs(price - ema50) / price < 0.03:
+        return "Sideways"
+    else:
+        return "Downtrend"
+
+def classify_signal(last_row, score, grade, trend):
+    rsi        = float(last_row['RSI'])
+    vol_ratio  = float(last_row['VOL_RATIO'])
+    mom_5d     = float(last_row['MOM_5D'])
+    mom_20d    = float(last_row['MOM_20D'])
+
+    if (
+        trend in ["Strong Uptrend", "Uptrend"] and
+        grade in ["A+", "A"] and
+        vol_ratio > 1.5 and
+        45 <= rsi <= 70 and
+        mom_5d > 0 and
+        mom_20d > 0
+    ):
+        return "Strong Buy"
+
+    if (
+        trend in ["Strong Uptrend", "Uptrend"] and
+        grade in ["A+", "A", "B+"] and
+        vol_ratio > 1.0 and
+        40 <= rsi <= 75
+    ):
+        return "Buy"
+
+    if trend == "Sideways" and grade in ["B+", "B", "C"]:
+        return "Hold"
+
+    return "Sell"
+
+def compute_trade_plan(df, strategy, trend):
+    r = df.iloc[-1]
+    price = float(r['Close'])
+    ema21 = float(r['EMA21'])
+    ema50 = float(r['EMA50'])
+
+    if strategy == "Swing":
+        entry_ideal = round(price * 0.99, 0)
+        tp1 = round(entry_ideal * 1.06, 0)
+        tp2 = round(entry_ideal * 1.10, 0)
+        tp3 = round(entry_ideal * 1.15, 0)
+        sl  = round(entry_ideal * 0.95, 0)
+    elif strategy == "Value":
+        entry_ideal = round(price * 0.98, 0)
+        tp1 = round(entry_ideal * 1.15, 0)
+        tp2 = round(entry_ideal * 1.25, 0)
+        tp3 = round(entry_ideal * 1.35, 0)
+        sl  = round(entry_ideal * 0.93, 0)
+    else:
+        entry_ideal = round(price * 0.995, 0)
+        tp1 = round(entry_ideal * 1.04, 0)
+        tp2 = round(entry_ideal * 1.07, 0)
+        tp3 = None
+        sl  = round(entry_ideal * 0.97, 0)
+
+    if trend in ["Strong Uptrend", "Uptrend"] and ema21 < price:
+        ema_entry = round(ema21 * 1.01, 0)
+        if price * 0.9 < ema_entry < price:
+            entry_ideal = ema_entry
+
+    if trend == "Downtrend":
+        sl = round(entry_ideal * 0.96, 0)
+
+    entry_aggressive = round(price, 0)
+
+    return {
+        "entry_ideal": entry_ideal,
+        "entry_aggressive": entry_aggressive,
+        "tp1": tp1,
+        "tp2": tp2,
+        "tp3": tp3,
+        "sl": sl,
+    }
+
+# ============= PROCESS TICKER =============
 def process_ticker(ticker, strategy, period):
-    """Fetch + score + hitung entry/TP/SL per strategi"""
     try:
         df = fetch_data(ticker, period)
         if df is None:
@@ -1047,7 +960,6 @@ def process_ticker(ticker, strategy, period):
 
         price = float(df['Close'].iloc[-1])
 
-        # Pilih fungsi scoring
         if strategy == "BPJS":
             score, details, conf, grade = score_bpjs(df)
         elif strategy == "BSJP":
@@ -1058,123 +970,83 @@ def process_ticker(ticker, strategy, period):
             score, details, conf, grade = score_swing(df)
         elif strategy == "Value":
             score, details, conf, grade = score_value(df)
-        else:  # General / Speed
+        else:
             score, details, conf, grade = score_general(df)
 
-        if grade not in ['A+', 'A', 'B+', 'B', 'C']:
+        if grade not in ['A+','A','B+','B','C']:
             return None
 
-        # ========== LEVELS PER STRATEGI ==========
-        if strategy == "Swing":
-            entry = round(price * 0.99, 0)    # -1%
-            tp1 = round(entry * 1.06, 0)      # +6%
-            tp2 = round(entry * 1.10, 0)      # +10%
-            tp3 = round(entry * 1.15, 0)      # +15%
-            sl = round(entry * 0.95, 0)       # -5%
-
-        elif strategy == "Value":
-            entry = round(price * 0.98, 0)    # -2%
-            tp1 = round(entry * 1.15, 0)      # +15%
-            tp2 = round(entry * 1.25, 0)      # +25%
-            tp3 = round(entry * 1.35, 0)      # +35%
-            sl = round(entry * 0.93, 0)       # -7%
-
-        elif strategy == "BPJS":
-            entry = round(price * 0.995, 0)   # -0.5%
-            tp1 = round(entry * 1.06, 0)      # ~+6%
-            tp2 = round(entry * 1.08, 0)      # ~+8%
-            tp3 = None
-            sl = round(entry * 0.94, 0)       # -6%
-
-        elif strategy == "BSJP":
-            entry = round(price * 0.995, 0)   # -0.5%
-            tp1 = round(entry * 1.05, 0)      # ~+5%
-            tp2 = round(entry * 1.08, 0)      # ~+8%
-            tp3 = None
-            sl = round(entry * 0.94, 0)       # -6%
-
-        else:
-            # SPEED / General / Bandar: 1–2 hari
-            entry = round(price * 0.995, 0)   # -0.5%
-            tp1 = round(entry * 1.04, 0)      # +4%
-            tp2 = round(entry * 1.07, 0)      # +7%
-            tp3 = None
-            sl = round(entry * 0.97, 0)       # -3%
+        last_row = df.iloc[-1]
+        trend = detect_trend(last_row)
+        signal = classify_signal(last_row, score, grade, trend)
+        plan = compute_trade_plan(df, strategy, trend)
 
         result = {
-            "Ticker": ticker.replace('.JK', ''),
+            "Ticker": ticker.replace('.JK',''),
             "Price": price,
             "Score": score,
             "Confidence": conf,
             "Grade": grade,
-            "Entry": entry,
-            "TP1": tp1,
-            "TP2": tp2,
-            "SL": sl,
+            "Trend": trend,
+            "Signal": signal,
+            "Entry": plan["entry_ideal"],
+            "EntryAggressive": plan["entry_aggressive"],
+            "TP1": plan["tp1"],
+            "TP2": plan["tp2"],
+            "SL": plan["sl"],
             "Details": details
         }
-
-        if tp3:
-            result["TP3"] = tp3
+        if plan["tp3"]:
+            result["TP3"] = plan["tp3"]
 
         return result
     except Exception:
         return None
 
-
-# ============= SESSION HELPERS =============
+# ============= SESSION SAVE =============
 def save_scan_to_session(df2, df1, strategy):
     st.session_state.last_scan_results = (df2, df1)
     st.session_state.last_scan_time = datetime.now()
     st.session_state.last_scan_strategy = strategy
     st.session_state.scan_count += 1
 
-
 def display_last_scan_info():
     if st.session_state.last_scan_results:
         df2, df1 = st.session_state.last_scan_results
         time_ago = datetime.now() - st.session_state.last_scan_time
         mins_ago = int(time_ago.total_seconds() / 60)
-
         st.markdown(f"""
-        <div style='background: linear-gradient(135deg, #064e3b 0%, #065f46 100%); 
-                    padding: 12px; border-radius: 8px; margin-bottom: 15px;
-                    border-left: 4px solid #10b981;'>
-            <p style='margin: 0; color: white; font-weight: bold;'>
+        <div style='background: linear-gradient(135deg,#064e3b 0%,#065f46 100%);
+                    padding:12px;border-radius:8px;margin-bottom:15px;
+                    border-left:4px solid #10b981;'>
+            <p style='margin:0;color:white;font-weight:bold;'>
                 📂 LAST SCAN RESULTS
             </p>
-            <p style='margin: 5px 0 0 0; color: #d1fae5; font-size: 0.9em;'>
-                Strategy: {st.session_state.last_scan_strategy} | 
-                Time: {st.session_state.last_scan_time.strftime('%H:%M:%S')} ({mins_ago} min ago) | 
-                Found: {len(df2)} Grade A+/A stocks
+            <p style='margin:5px 0 0 0;color:#d1fae5;font-size:0.9em;'>
+                Strategy: {st.session_state.last_scan_strategy} |
+                Time: {st.session_state.last_scan_time.strftime('%H:%M:%S')} ({mins_ago} min ago) |
+                Found: {len(df2)} Grade A+/A/B picks
             </p>
         </div>
         """, unsafe_allow_html=True)
-
         return True
     return False
-
 
 def create_csv_download(df, strategy):
     if not df.empty:
         export_df = df.copy()
         if 'Details' in export_df.columns:
             export_df = export_df.drop('Details', axis=1)
-
         csv = export_df.to_csv(index=False)
         timestamp = datetime.now().strftime('%Y%m%d_%H%M')
         filename = f"IDX_{strategy}_scan_{timestamp}.csv"
-
         st.download_button(
             label="💾 Download Results (CSV)",
             data=csv,
             file_name=filename,
-            mime="text/csv",
-            help="Save scan results to your device"
+            mime="text/csv"
         )
 
-
-# ============= SCAN ENGINE =============
 def scan_stocks(tickers, strategy, period, limit1, limit2):
     st.info(f"🔍 **STAGE 1**: Scanning {len(tickers)} stocks for {strategy}...")
 
@@ -1185,17 +1057,14 @@ def scan_stocks(tickers, strategy, period, limit1, limit2):
     with ThreadPoolExecutor(max_workers=10) as executor:
         futures = {executor.submit(process_ticker, t, strategy, period): t for t in tickers}
         completed = 0
-
         for future in as_completed(futures):
             completed += 1
             progress.progress(completed / len(tickers))
             status.text(f"📊 {completed}/{len(tickers)} | Found: {len(results)}")
-
             result = future.result()
             if result:
                 results.append(result)
-
-            time.sleep(0.005)
+            time.sleep(0.05)
 
     progress.empty()
     status.empty()
@@ -1206,17 +1075,15 @@ def scan_stocks(tickers, strategy, period, limit1, limit2):
     df1 = pd.DataFrame(results).sort_values("Score", ascending=False).head(limit1)
     st.success(f"✅ Stage 1: Found {len(df1)} candidates (Avg score: {df1['Score'].mean():.0f})")
 
-    df2 = df1[df1['Grade'].isin(['A+', 'A', 'B+', 'B'])].head(limit2)
+    df2 = df1[df1['Grade'].isin(['A+','A','B+','B'])].head(limit2)
     st.success(f"🏆 Stage 2: {len(df2)} elite picks (Avg conf: {df2['Confidence'].mean():.0f}%)")
 
     save_scan_to_session(df2, df1, strategy)
-
     return df1, df2
 
-
-# ============= UI =============
-st.title("🚀 IDX Power Screener v4.5 ENHANCED")
-st.caption("3 Trading Styles + IHSG Dashboard + Session Persistence | Lock Screen Safe!")
+# ============= UI HEADER =============
+st.title("🚀 IDX Power Screener v5.0 STOCKBOT")
+st.caption("Trend + Signal + Entry Ideal/Agresif + TP1–TP3 + SL | Lock Screen Safe")
 
 display_ihsg_widget()
 tickers = load_tickers()
@@ -1224,61 +1091,53 @@ tickers = load_tickers()
 with st.sidebar:
     st.markdown("## ⚙️ Settings")
     st.info(f"📊 Total stocks: {len(tickers)}")
-
     jkt_time = get_jakarta_time()
     st.caption(f"🕐 Jakarta: {jkt_time.strftime('%H:%M WIB')}")
 
     st.markdown("---")
-
-    menu = st.radio("📋 Strategy", [
-        "⚡ SPEED Trader (1-2d)",
-        "🎯 SWING Trader (3-5d)",
-        "💎 VALUE Plays (Undervalued)",
-        "⚡ BPJS (Day Trading)",
-        "🌙 BSJP (Overnight)",
-        "🔮 Bandar Tracking",
-        "🔍 Single Stock"
-    ])
+    menu = st.radio(
+        "📋 Strategy",
+        [
+            "⚡ SPEED Trader (1-2d)",
+            "🎯 SWING Trader (3-5d)",
+            "💎 VALUE Plays (Undervalued)",
+            "⚡ BPJS (Day Trading)",
+            "🌙 BSJP (Overnight)",
+            "🔮 Bandar Tracking",
+            "🔍 Single Stock"
+        ]
+    )
 
     st.markdown("---")
 
     if "Single" not in menu:
         period = st.selectbox("Period", ["3mo", "6mo", "1y"], index=1)
-
         st.markdown("### 🎯 Filtering")
         limit1 = st.slider("Stage 1: Top N", 20, 100, 50, 10)
         limit2 = st.slider("Stage 2: Elite", 5, 30, 10, 5)
-
         st.caption(f"Scan {len(tickers)} → Top {limit1} → Elite {limit2}")
 
     st.markdown("---")
-    st.caption("v4.5 ENHANCED - Session Persistence + IHSG")
-
+    st.caption("v5.0 STOCKBOT - Trend + Signal + Entry Plan")
 
 # ============= MENU HANDLERS =============
-
-# ---- Single Stock ----
 if "Single Stock" in menu:
     st.markdown("### 🔍 Single Stock Analysis")
 
-    selected = st.selectbox("Select Stock", [t.replace('.JK', '') for t in tickers])
-    strategy_single = st.selectbox("Strategy", ["General", "BPJS", "BSJP", "Bandar"])
+    selected = st.selectbox("Select Stock", [t.replace('.JK','') for t in tickers])
+    strategy_single = st.selectbox("Strategy", ["General", "BPJS", "BSJP", "Bandar", "Swing", "Value"])
     period = st.selectbox("Period", ["3mo", "6mo", "1y"], index=1)
 
     if st.button("🔍 ANALYZE", type="primary"):
         ticker_full = selected if selected.endswith('.JK') else f"{selected}.JK"
-
         with st.spinner(f"Analyzing {selected}..."):
             df = fetch_data(ticker_full, period)
-
             if df is None:
                 st.error("❌ Failed to fetch data")
             else:
                 result = process_ticker(ticker_full, strategy_single, period)
-
                 if result is None:
                     st.error("❌ Analysis failed or stock rejected by filters")
-
                     st.markdown("### 📊 Chart (For Reference)")
                     chart = create_chart(df, selected)
                     if chart:
@@ -1290,69 +1149,37 @@ if "Single Stock" in menu:
                         st.plotly_chart(chart, use_container_width=True)
 
                     st.markdown(f"## 💎 {result['Ticker']}")
-                    st.markdown(f"### Grade: **{result['Grade']}**")
+                    colA, colB, colC, colD = st.columns(4)
+                    colA.metric("Price", f"Rp {result['Price']:,.0f}")
+                    colB.metric("Score", f"{result['Score']}/100")
+                    colC.metric("Confidence", f"{result['Confidence']}%")
+                    colD.metric("Grade", result['Grade'])
 
-                    col1, col2, col3 = st.columns(3)
-                    col1.metric("Price", f"Rp {result['Price']:,.0f}")
-                    col2.metric("Score", f"{result['Score']}/100")
-                    col3.metric("Confidence", f"{result['Confidence']}%")
+                    colE, colF = st.columns(2)
+                    colE.metric("Trend", result['Trend'])
+                    colF.metric("Signal", result['Signal'])
 
-                    plan_title = {
-                        "General": "⚡ SPEED TRADING PLAN (1-2 Days)",
-                        "BPJS": "⚡ BPJS - Beli Pagi Jual Sore",
-                        "BSJP": "🌙 BSJP - Beli Sore Jual Pagi",
-                        "Bandar": "🔮 Wyckoff / Bandar View"
-                    }.get(strategy_single, "⚡ SPEED TRADING PLAN (1-2 Days)")
+                    tp3_text = ""
+                    if 'TP3' in result and result['TP3']:
+                        tp3_text = f"**TP3:** Rp {result['TP3']:,.0f}\n"
 
-                    if strategy_single == "BPJS":
-                        st.success(f"""
-                        **{plan_title}**
+                    st.success(f"""
+                    **🎯 TRADE PLAN ({strategy_single}):**
 
-                        **Entry Range:** Rp {result['Entry']:,.0f}  
-                        **Target Intraday:** Rp {result['TP1']:,.0f} s/d Rp {result.get('TP2', result['TP1']):,.0f}  
-                        **Stop Loss:** Rp {result['SL']:,.0f}
+                    • **Entry Ideal:** Rp {result['Entry']:,.0f}  
+                    • **Entry Agresif:** Rp {result['EntryAggressive']:,.0f}  
 
-                        ⏰ Eksekusi pagi, wajib keluar maksimal jam 15:00 WIB.
-                        """)
-                    elif strategy_single == "BSJP":
-                        st.success(f"""
-                        **{plan_title}**
+                    • **TP1:** Rp {result['TP1']:,.0f}  
+                    • **TP2:** Rp {result['TP2']:,.0f}  
+                    {tp3_text if tp3_text else ""}• **Stop Loss:** Rp {result['SL']:,.0f}  
 
-                        **Entry (menjelang close):** Rp {result['Entry']:,.0f}  
-                        **Target Gap Pagi:** Rp {result['TP1']:,.0f} s/d Rp {result.get('TP2', result['TP1']):,.0f}  
-                        **Stop Loss:** Rp {result['SL']:,.0f}
+                    **Signal:** {result['Signal']} | **Trend:** {result['Trend']}
+                    """)
 
-                        ⏰ Jual keesokan pagi (09:30–10:30 WIB).
-                        """)
-                    elif strategy_single == "Bandar":
-                        st.success(f"""
-                        **{plan_title}**
+                    with st.expander("📋 Technical Details"):
+                        for k, v in result['Details'].items():
+                            st.caption(f"• **{k}**: {v}")
 
-                        **Entry Area:** Rp {result['Entry']:,.0f}  
-                        **TP1:** Rp {result['TP1']:,.0f}  
-                        **TP2:** Rp {result['TP2']:,.0f}  
-                        **Stop Loss Awal:** Rp {result['SL']:,.0f}  
-
-                        Fokus lihat fase Wyckoff (Accumulation / Markup / Distribution).
-                        """)
-                    else:
-                        st.success(f"""
-                        **{plan_title}**
-
-                        **Entry:** Rp {result['Entry']:,.0f} (buy the dip)  
-                        **TP1 (Day 1):** Rp {result['TP1']:,.0f}  
-                        **TP2 (Day 2):** Rp {result['TP2']:,.0f}  
-                        **Stop Loss:** Rp {result['SL']:,.0f}  
-
-                        ⏰ Max hold 1–2 hari.
-                        """)
-
-                    st.markdown("**Technical Analysis:**")
-                    for k, v in result['Details'].items():
-                        st.caption(f"• **{k}**: {v}")
-
-
-# ---- BPJS ----
 elif "BPJS" in menu:
     st.markdown("### ⚡ BPJS - Beli Pagi Jual Sore")
 
@@ -1363,10 +1190,11 @@ elif "BPJS" in menu:
 
     st.info("""
     **Strategy:**
-    - Entry: 09:00-09:30 WIB (first 30 min)
+    - Entry: 09:00-09:30 WIB
     - Exit: Same day 14:30-15:15
-    - Fokus: Oversold + volume surge
-    - Risiko: Cepat, wajib disiplin cut loss
+    - Target: 3-5% intraday
+    - Focus: Oversold stocks with volume surge
+    - Risk: High volatility, fast execution needed
     """)
 
     if st.button("🚀 SCAN BPJS", type="primary"):
@@ -1379,40 +1207,43 @@ elif "BPJS" in menu:
                     st.dataframe(df1, use_container_width=True)
         else:
             st.markdown(f"### 🏆 TOP {len(df2)} BPJS PICKS")
+            create_csv_download(df2, "BPJS")
 
             for idx, row in df2.iterrows():
-                emoji = "⚡" if row['Grade'] in ['A+', 'A'] else "🔸"
-
+                emoji = "⚡" if row['Grade'] in ['A+','A'] else "🔸"
                 with st.expander(
-                    f"{emoji} **{row['Ticker']}** | Grade **{row['Grade']}** | Score: {row['Score']}/100",
+                    f"{emoji} **{row['Ticker']}** | Grade **{row['Grade']}** | "
+                    f"Score: {row['Score']}/100 | Signal: {row['Signal']} | Trend: {row['Trend']}",
                     expanded=True
                 ):
-                    col1, col2, col3, col4 = st.columns(4)
-                    col1.metric("Price", f"Rp {row['Price']:,.0f}")
-                    col2.metric("Score", f"{row['Score']}")
-                    col3.metric("Confidence", f"{row['Confidence']}%")
-                    col4.metric("Grade", row['Grade'])
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.metric("Price", f"Rp {row['Price']:,.0f}")
+                    c2.metric("Score", f"{row['Score']}")
+                    c3.metric("Confidence", f"{row['Confidence']}%")
+                    c4.metric("Grade", row['Grade'])
+
+                    c5, c6 = st.columns(2)
+                    c5.metric("Trend", row['Trend'])
+                    c6.metric("Signal", row['Signal'])
 
                     st.success(f"""
-                    **🎯 BPJS INTRADAY PLAN:**
+                    **🎯 BPJS TRADE PLAN (Intraday):**
 
-                    **Entry Range:** Rp {row['Entry']:,.0f}  
-                    **Target Intraday:** Rp {row['TP1']:,.0f} s/d Rp {row.get('TP2', row['TP1']):,.0f}  
-                    **Stop Loss:** Rp {row['SL']:,.0f}  
+                    • **Entry Ideal:** Rp {row['Entry']:,.0f}  
+                    • **Entry Agresif:** Rp {row['EntryAggressive']:,.0f}  
 
-                    ⏰ WAJIB KELUAR HARI INI (maks 15:00 WIB).
+                    • **TP1 (Target utama):** Rp {row['TP1']:,.0f}  
+                    • **TP2 (Maksimal):** Rp {row['TP2']:,.0f}  
+
+                    • **Stop Loss:** Rp {row['SL']:,.0f}  
+
+                    ⏰ **EXIT SAME DAY sebelum 15:00 WIB!**
                     """)
 
                     st.markdown("**Analysis:**")
                     for k, v in row['Details'].items():
                         st.caption(f"• **{k}**: {v}")
 
-            if not df1.empty:
-                with st.expander(f"📊 Stage 1: All {len(df1)} Candidates"):
-                    st.dataframe(df1, use_container_width=True)
-
-
-# ---- BSJP ----
 elif "BSJP" in menu:
     st.markdown("### 🌙 BSJP - Beli Sore Jual Pagi")
 
@@ -1426,7 +1257,7 @@ elif "BSJP" in menu:
     - Entry: 14:00-15:20 WIB (gap down stocks)
     - Exit: Next morning 09:30-10:30
     - Target: 3-5% gap recovery
-    - Risk: Overnight risk, jangan overlot
+    - Risk: Overnight holding risk
     """)
 
     if st.button("🚀 SCAN BSJP", type="primary"):
@@ -1439,52 +1270,52 @@ elif "BSJP" in menu:
                     st.dataframe(df1, use_container_width=True)
         else:
             st.markdown(f"### 🏆 TOP {len(df2)} BSJP PICKS")
+            create_csv_download(df2, "BSJP")
 
             for idx, row in df2.iterrows():
-                emoji = "🌙" if row['Grade'] in ['A+', 'A'] else "🔸"
-
+                emoji = "🌙" if row['Grade'] in ['A+','A'] else "🔸"
                 with st.expander(
-                    f"{emoji} **{row['Ticker']}** | Grade **{row['Grade']}** | Score: {row['Score']}/100",
+                    f"{emoji} **{row['Ticker']}** | Grade **{row['Grade']}** | "
+                    f"Score: {row['Score']}/100 | Signal: {row['Signal']} | Trend: {row['Trend']}",
                     expanded=True
                 ):
-                    col1, col2, col3, col4 = st.columns(4)
-                    col1.metric("Price", f"Rp {row['Price']:,.0f}")
-                    col2.metric("Score", f"{row['Score']}")
-                    col3.metric("Confidence", f"{row['Confidence']}%")
-                    col4.metric("Grade", row['Grade'])
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.metric("Price", f"Rp {row['Price']:,.0f}")
+                    c2.metric("Score", f"{row['Score']}")
+                    c3.metric("Confidence", f"{row['Confidence']}%")
+                    c4.metric("Grade", row['Grade'])
+
+                    c5, c6 = st.columns(2)
+                    c5.metric("Trend", row['Trend'])
+                    c6.metric("Signal", row['Signal'])
 
                     st.success(f"""
-                    **🌙 BSJP OVERNIGHT PLAN:**
+                    **🌙 BSJP TRADE PLAN (Overnight):**
 
-                    **Entry (menjelang close):** Rp {row['Entry']:,.0f}  
-                    **Target Gap Pagi:** Rp {row['TP1']:,.0f} s/d Rp {row.get('TP2', row['TP1']):,.0f}  
-                    **Stop Loss:** Rp {row['SL']:,.0f}  
+                    • **Entry Ideal (Sore):** Rp {row['Entry']:,.0f}  
+                    • **Entry Agresif:** Rp {row['EntryAggressive']:,.0f}  
 
-                    ⏰ Jual besok pagi, jangan ditarik jadi swing.
+                    • **TP1 (Pagi):** Rp {row['TP1']:,.0f}  
+                    • **TP2 (Maksimal):** Rp {row['TP2']:,.0f}  
+
+                    • **Stop Loss:** Rp {row['SL']:,.0f}  
+
+                    ⏰ **Jual besok pagi jam 09:30–10:30 WIB**
                     """)
 
                     st.markdown("**Analysis:**")
                     for k, v in row['Details'].items():
                         st.caption(f"• **{k}**: {v}")
 
-            if not df1.empty:
-                with st.expander(f"📊 Stage 1: All {len(df1)} Candidates"):
-                    st.dataframe(df1, use_container_width=True)
-
-
-# ---- Bandar ----
 elif "Bandar" in menu:
     st.markdown("### 🔮 Bandar Tracking - Wyckoff Smart Money")
 
     st.info("""
-    **Wyckoff Methodology:**
+    Wyckoff:
     - 🟢 ACCUMULATION = BUY
-    - 🚀 MARKUP = HOLD/TRAIL
-    - 🔴 DISTRIBUTION = SELL/AVOID
+    - 🚀 MARKUP = HOLD
+    - 🔴 DISTRIBUTION = SELL
     - ⚫ MARKDOWN = AVOID
-    - ⚪ RANGING = WAIT
-
-    Timeline: weeks to months (lebih swing/position).
     """)
 
     if st.button("🚀 SCAN BANDAR", type="primary"):
@@ -1497,83 +1328,70 @@ elif "Bandar" in menu:
                     st.dataframe(df1, use_container_width=True)
         else:
             st.markdown(f"### 🏆 TOP {len(df2)} WYCKOFF SIGNALS")
+            create_csv_download(df2, "BANDAR")
 
             for idx, row in df2.iterrows():
                 phase = row['Details'].get('Phase', '')
-                signal = row['Details'].get('Signal', '')
+                signal_phase = row['Details'].get('Signal', '')
 
                 if "Accumulation" in phase:
-                    emoji = "🟢"; expanded = True
+                    emoji = "🟢"
+                    expanded = True
                 elif "Markup" in phase:
-                    emoji = "🚀"; expanded = True
+                    emoji = "🚀"
+                    expanded = True
                 elif "Distribution" in phase:
-                    emoji = "🔴"; expanded = False
+                    emoji = "🔴"
+                    expanded = False
                 else:
-                    emoji = "⚪"; expanded = False
+                    emoji = "⚪"
+                    expanded = False
 
                 with st.expander(
-                    f"{emoji} **{row['Ticker']}** | {phase} | **{signal}** | Score: {row['Score']}",
+                    f"{emoji} **{row['Ticker']}** | {phase} | "
+                    f"Wyckoff: {signal_phase} | Signal: {row['Signal']} | Trend: {row['Trend']}",
                     expanded=expanded
                 ):
-                    col1, col2, col3, col4 = st.columns(4)
-                    col1.metric("Price", f"Rp {row['Price']:,.0f}")
-                    col2.metric("Score", f"{row['Score']}")
-                    col3.metric("Grade", row['Grade'])
-                    col4.metric("Confidence", f"{row['Confidence']}%")
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.metric("Price", f"Rp {row['Price']:,.0f}")
+                    c2.metric("Score", f"{row['Score']}")
+                    c3.metric("Grade", row['Grade'])
+                    c4.metric("Confidence", f"{row['Confidence']}%")
+
+                    c5, c6 = st.columns(2)
+                    c5.metric("Trend", row['Trend'])
+                    c6.metric("Signal", row['Signal'])
 
                     if "Accumulation" in phase:
                         st.success(f"""
-                        🟢 **SMART MONEY ACCUMULATING!**
+                        🟢 **SMART MONEY ACCUMULATING**
 
-                        **Entry Zone:** Rp {row['Entry']:,.0f}  
-                        **TP1:** Rp {row['TP1']:,.0f}  
-                        **TP2:** Rp {row['TP2']:,.0f}  
-                        **Stop Loss:** Rp {row['SL']:,.0f}  
+                        • **Entry Ideal:** Rp {row['Entry']:,.0f}  
+                        • **Entry Agresif:** Rp {row['EntryAggressive']:,.0f}  
 
-                        Fokus swing / position, trailing pakai EMA20/50.
+                        • **TP1:** Rp {row['TP1']:,.0f}  
+                        • **TP2:** Rp {row['TP2']:,.0f}  
+                        {"• **TP3:** Rp "+f"{row['TP3']:,.0f}" if 'TP3' in row and row['TP3'] else ""}
+
+                        • **Stop Loss:** Rp {row['SL']:,.0f}
                         """)
                     elif "Markup" in phase:
-                        st.info("""
-                        🚀 **UPTREND ACTIVE**
-
-                        Kalau sudah punya: hold & trail stop.  
-                        Kalau belum masuk: tunggu pullback / base baru.
-                        """)
+                        st.info("🚀 UPTREND ACTIVE - hold & trail stop.")
                     elif "Distribution" in phase:
-                        st.error("""
-                        🔴 **DISTRIBUTION ZONE**
-
-                        ACTION: Realisasikan profit, jangan entry baru.
-                        """)
+                        st.error("🔴 DISTRIBUTION - SELL / AVOID new entry.")
                     else:
-                        st.warning("""
-                        ⚪ **Belum ada fase jelas**
-
-                        Tunggu pola accumulation / spring yang lebih clean.
-                        """)
+                        st.warning("⚪ RANGING - wait, no clear direction.")
 
                     st.markdown("**Wyckoff Analysis:**")
                     for k, v in row['Details'].items():
                         st.caption(f"• **{k}**: {v}")
 
-            if not df1.empty:
-                with st.expander(f"📊 Stage 1: All {len(df1)} Candidates"):
-                    st.dataframe(df1, use_container_width=True)
-
-
-# ---- SWING ----
 elif "SWING" in menu:
     st.markdown("### 🎯 SWING TRADER - Hold 3-5 Days")
-
     display_last_scan_info()
 
     st.info("""
-    **SWING Strategy:**
-    - Holding: 3–5 hari
-    - TP1: +6% (Day 2–3)
-    - TP2: +10% (Day 4–5)
-    - TP3: +15% (runner)
-    - SL: -5%
+    Holding 3-5 hari. Fokus trend + momentum.
     """)
 
     if st.button("🚀 START SWING SCAN", type="primary"):
@@ -1586,71 +1404,59 @@ elif "SWING" in menu:
                     st.dataframe(df1, use_container_width=True)
         else:
             st.markdown(f"### 🏆 TOP {len(df2)} SWING PICKS")
-
             create_csv_download(df2, "SWING")
 
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Swing Picks", len(df2))
-            col2.metric("Avg Score", f"{df2['Score'].mean():.0f}/100")
-            col3.metric("Avg Confidence", f"{df2['Confidence'].mean():.0f}%")
-            col4.metric("Grade A+/A", len(df2[df2['Grade'].isin(['A+', 'A'])]))
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Swing Picks", len(df2))
+            c2.metric("Avg Score", f"{df2['Score'].mean():.0f}/100")
+            c3.metric("Avg Confidence", f"{df2['Confidence'].mean():.0f}%")
+            c4.metric("Grade A+/A", len(df2[df2['Grade'].isin(['A+','A'])]))
 
             for idx, row in df2.iterrows():
-                emoji = "🎯" if row['Grade'] in ['A+', 'A'] else "🔹"
-
+                emoji = "🎯" if row['Grade'] in ['A+','A'] else "🔹"
                 with st.expander(
-                    f"{emoji} **{row['Ticker']}** | Grade **{row['Grade']}** | Score: {row['Score']}/100",
+                    f"{emoji} **{row['Ticker']}** | Grade **{row['Grade']}** | "
+                    f"Score: {row['Score']}/100 | Signal: {row['Signal']} | Trend: {row['Trend']}",
                     expanded=True
                 ):
-                    col1, col2, col3, col4 = st.columns(4)
-                    col1.metric("Price", f"Rp {row['Price']:,.0f}")
-                    col2.metric("Score", f"{row['Score']}")
-                    col3.metric("Confidence", f"{row['Confidence']}%")
-                    col4.metric("Grade", row['Grade'])
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.metric("Price", f"Rp {row['Price']:,.0f}")
+                    c2.metric("Score", f"{row['Score']}")
+                    c3.metric("Confidence", f"{row['Confidence']}%")
+                    c4.metric("Grade", row['Grade'])
+
+                    c5, c6 = st.columns(2)
+                    c5.metric("Trend", row['Trend'])
+                    c6.metric("Signal", row['Signal'])
 
                     tp3_text = ""
                     if 'TP3' in row and row['TP3']:
-                        tp3_text = f"**TP3 (Runner):** Rp {row['TP3']:,.0f} (+15%)\n                    - Trail dengan EMA20\n                    "
+                        tp3_text = f"• **TP3 (Runner):** Rp {row['TP3']:,.0f}\n"
 
                     st.success(f"""
-                    **🎯 SWING TRADING PLAN (3–5 Days):**
+                    **🎯 SWING PLAN (3-5 Hari):**
 
-                    **Entry:** Rp {row['Entry']:,.0f} (-1%)  
+                    • **Entry Ideal:** Rp {row['Entry']:,.0f}  
+                    • **Entry Agresif:** Rp {row['EntryAggressive']:,.0f}  
 
-                    **TP1 (Day 2–3):** Rp {row['TP1']:,.0f} (+6%)  
-                    - Jual ~30%
+                    • **TP1 (Day 2-3):** Rp {row['TP1']:,.0f}  
+                    • **TP2 (Day 4-5):** Rp {row['TP2']:,.0f}  
+                    {tp3_text if tp3_text else ""}• **Stop Loss:** Rp {row['SL']:,.0f}
 
-                    **TP2 (Day 4–5):** Rp {row['TP2']:,.0f} (+10%)  
-                    - Jual ~40%
-
-                    {tp3_text}
-                    **Stop Loss:** Rp {row['SL']:,.0f} (-5%)
-
-                    ⏰ Hold 3–5 hari, biarkan yang kuat jadi runner.
+                    ⏰ Hold 3–5 hari, biarkan winner jalan.
                     """)
 
                     st.markdown("**Technical Analysis:**")
                     for k, v in row['Details'].items():
                         st.caption(f"• **{k}**: {v}")
 
-            if not df1.empty:
-                with st.expander(f"📊 Stage 1: All {len(df1)} Candidates"):
-                    st.dataframe(df1, use_container_width=True)
-
-
-# ---- VALUE ----
 elif "VALUE" in menu:
     st.markdown("### 💎 VALUE PLAYS - Undervalued Gems")
-
     display_last_scan_info()
 
     st.info("""
-    **VALUE Strategy:**
-    - Target: saham < Rp 1.000
-    - Entry dekat support / oversold
-    - Holding: 5–10 hari
-    - TP1: +15%, TP2: +25%, TP3: +35%
-    - SL: -7%
+    Fokus harga murah < Rp 1.000, dekat support, oversold sehat.
+    Holding 5–10 hari.
     """)
 
     if st.button("🚀 FIND VALUE PLAYS", type="primary"):
@@ -1663,62 +1469,59 @@ elif "VALUE" in menu:
                     st.dataframe(df1, use_container_width=True)
         else:
             st.markdown(f"### 💎 TOP {len(df2)} VALUE PLAYS")
-
             create_csv_download(df2, "VALUE")
 
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Value Picks", len(df2))
-            col2.metric("Avg Price", f"Rp {df2['Price'].mean():.0f}")
-            col3.metric("Avg Score", f"{df2['Score'].mean():.0f}/100")
-            col4.metric("Grade A/B+", len(df2[df2['Grade'].isin(['A', 'B+'])]))
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Value Picks", len(df2))
+            c2.metric("Avg Price", f"Rp {df2['Price'].mean():.0f}")
+            c3.metric("Avg Score", f"{df2['Score'].mean():.0f}/100")
+            c4.metric("Grade A/B+", len(df2[df2['Grade'].isin(['A','B+'])]))
 
             for idx, row in df2.iterrows():
-                emoji = "💎" if row['Grade'] in ['A', 'B+'] else "💰"
-
+                emoji = "💎" if row['Grade'] in ['A','B+'] else "💰"
                 with st.expander(
-                    f"{emoji} **{row['Ticker']}** | Rp {row['Price']:,.0f} | Grade **{row['Grade']}** | Score: {row['Score']}/100",
+                    f"{emoji} **{row['Ticker']}** | Rp {row['Price']:,.0f} | "
+                    f"Grade **{row['Grade']}** | Score: {row['Score']}/100 | "
+                    f"Signal: {row['Signal']} | Trend: {row['Trend']}",
                     expanded=True
                 ):
-                    col1, col2, col3, col4 = st.columns(4)
-                    col1.metric("Price", f"Rp {row['Price']:,.0f}")
-                    col2.metric("Score", f"{row['Score']}")
-                    col3.metric("Confidence", f"{row['Confidence']}%")
-                    col4.metric("Grade", row['Grade'])
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.metric("Price", f"Rp {row['Price']:,.0f}")
+                    c2.metric("Score", f"{row['Score']}")
+                    c3.metric("Confidence", f"{row['Confidence']}%")
+                    c4.metric("Grade", row['Grade'])
+
+                    c5, c6 = st.columns(2)
+                    c5.metric("Trend", row['Trend'])
+                    c6.metric("Signal", row['Signal'])
+
+                    tp3_text = ""
+                    if 'TP3' in row and row['TP3']:
+                        tp3_text = f"• **TP3 (Moon!):** Rp {row['TP3']:,.0f}\n"
 
                     st.success(f"""
-                    💎 **VALUE PLAY SETUP (5–10 Days):**
+                    💎 **VALUE PLAY (5–10 Hari):**
 
-                    **Entry Zone:** Rp {row['Entry']:,.0f} (-2%)  
+                    • **Entry Ideal:** Rp {row['Entry']:,.0f}  
+                    • **Entry Agresif:** Rp {row['EntryAggressive']:,.0f}  
 
-                    **TP1:** Rp {row['TP1']:,.0f} (+15%)  
-                    **TP2:** Rp {row['TP2']:,.0f} (+25%)  
-                    **TP3:** Rp {row.get('TP3', 0):,.0f} (+35%)  
+                    • **TP1:** Rp {row['TP1']:,.0f}  
+                    • **TP2:** Rp {row['TP2']:,.0f}  
+                    {tp3_text if tp3_text else ""}• **Stop Loss:** Rp {row['SL']:,.0f}
 
-                    **Stop Loss:** Rp {row['SL']:,.0f} (-7%)
-
-                    Fokus beli murah, sabar tunggu reversal.
+                    ⏰ Sabar, tunggu reversal 5–10 hari.
                     """)
 
                     st.markdown("**Why Undervalued:**")
                     for k, v in row['Details'].items():
                         st.caption(f"• **{k}**: {v}")
 
-            if not df1.empty:
-                with st.expander(f"📊 Stage 1: All {len(df1)} Candidates"):
-                    st.dataframe(df1, use_container_width=True)
-
-
-# ---- SPEED / GENERAL ----
-elif "SPEED" in menu:
+else:  # SPEED DEFAULT
     st.markdown("### ⚡ SPEED TRADER - Quick 1-2 Days")
-
     display_last_scan_info()
 
     st.info("""
-    **SPEED Strategy:**
-    - Holding: 1–2 hari maksimal
-    - TP1: +4%, TP2: +7%
-    - SL: -3%
+    Holding maksimal 1–2 hari, target kecil tapi cepat.
     """)
 
     if st.button("🚀 START SPEED SCAN", type="primary"):
@@ -1731,52 +1534,48 @@ elif "SPEED" in menu:
                     st.dataframe(df1, use_container_width=True)
         else:
             st.markdown(f"### 🏆 TOP {len(df2)} SPEED PICKS")
-
             create_csv_download(df2, "SPEED")
 
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Speed Picks", len(df2))
-            col2.metric("Avg Score", f"{df2['Score'].mean():.0f}/100")
-            col3.metric("Avg Confidence", f"{df2['Confidence'].mean():.0f}%")
-            col4.metric("Grade A+/A", len(df2[df2['Grade'].isin(['A+', 'A'])]))
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Speed Picks", len(df2))
+            c2.metric("Avg Score", f"{df2['Score'].mean():.0f}/100")
+            c3.metric("Avg Confidence", f"{df2['Confidence'].mean():.0f}%")
+            c4.metric("Grade A+/A", len(df2[df2['Grade'].isin(['A+','A'])]))
 
             for idx, row in df2.iterrows():
-                emoji = "⚡" if row['Grade'] in ['A+', 'A'] else "🔹"
-
+                emoji = "⚡" if row['Grade'] in ['A+','A'] else "🔹"
                 with st.expander(
-                    f"{emoji} **{row['Ticker']}** | Grade **{row['Grade']}** | Score: {row['Score']}/100",
+                    f"{emoji} **{row['Ticker']}** | Grade **{row['Grade']}** | "
+                    f"Score: {row['Score']}/100 | Signal: {row['Signal']} | Trend: {row['Trend']}",
                     expanded=True
                 ):
-                    col1, col2, col3, col4 = st.columns(4)
-                    col1.metric("Price", f"Rp {row['Price']:,.0f}")
-                    col2.metric("Score", f"{row['Score']}")
-                    col3.metric("Confidence", f"{row['Confidence']}%")
-                    col4.metric("Grade", row['Grade'])
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.metric("Price", f"Rp {row['Price']:,.0f}")
+                    c2.metric("Score", f"{row['Score']}")
+                    c3.metric("Confidence", f"{row['Confidence']}%")
+                    c4.metric("Grade", row['Grade'])
+
+                    c5, c6 = st.columns(2)
+                    c5.metric("Trend", row['Trend'])
+                    c6.metric("Signal", row['Signal'])
 
                     st.success(f"""
-                    **⚡ SPEED TRADING PLAN (1–2 Days):**
+                    **⚡ SPEED PLAN (1–2 Hari):**
 
-                    **Entry:** Rp {row['Entry']:,.0f} (buy the dip)  
+                    • **Entry Ideal:** Rp {row['Entry']:,.0f}  
+                    • **Entry Agresif:** Rp {row['EntryAggressive']:,.0f}  
 
-                    **Day 1 Target:** Rp {row['TP1']:,.0f} (+4%)  
-                    **Day 2 Target:** Rp {row['TP2']:,.0f} (+7%)  
+                    • **TP1 (Day 1):** Rp {row['TP1']:,.0f}  
+                    • **TP2 (Day 2):** Rp {row['TP2']:,.0f}  
 
-                    **Stop Loss:** Rp {row['SL']:,.0f} (-3%)
+                    • **Stop Loss:** Rp {row['SL']:,.0f}
 
-                    ⏰ WAJIB EXIT maksimal 2 hari.
+                    ⏰ EXIT MAX 1–2 HARI!
                     """)
 
                     st.markdown("**Technical Analysis:**")
                     for k, v in row['Details'].items():
                         st.caption(f"• **{k}**: {v}")
 
-            if not df1.empty:
-                with st.expander(f"📊 Stage 1: All {len(df1)} Candidates"):
-                    st.dataframe(df1, use_container_width=True)
-
-
-else:
-    st.error("Please select a trading strategy from the sidebar!")
-
 st.markdown("---")
-st.caption("🚀 IDX Power Screener v4.5 ENHANCED | Educational purposes only")
+st.caption("🚀 IDX Power Screener v5.0 STOCKBOT | Educational only, not financial advice.")
