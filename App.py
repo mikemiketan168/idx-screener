@@ -761,6 +761,8 @@ def score_swing(df):
             score += 5
             details['Volume'] = f'🟠 Normal {vol:.1f}x'
 
+        mom_10d = r['MOM_10D']
+        mom_20d = r['MOM_20D']
         if mom_10d > 5 and mom_20d > 8:
             score += 20
             details['Momentum'] = f'🟢 Strong 10D:{mom_10d:.1f}% 20D:{mom_20d:.1f}%'
@@ -884,28 +886,49 @@ def classify_signal(last_row, score, grade, trend):
     mom_5d     = float(last_row['MOM_5D'])
     mom_20d    = float(last_row['MOM_20D'])
 
-    if (
-        trend in ["Strong Uptrend", "Uptrend"] and
-        grade in ["A+", "A"] and
-        vol_ratio > 1.5 and
-        45 <= rsi <= 70 and
-        mom_5d > 0 and
-        mom_20d > 0
-    ):
-        return "Strong Buy"
+    # 1) UPTREND / STRONG UPTREND
+    if trend in ["Strong Uptrend", "Uptrend"]:
+        # Strong Buy: kondisi ideal dan sehat
+        if (
+            grade in ["A+", "A"]
+            and vol_ratio > 1.5
+            and 45 <= rsi <= 70
+            and mom_5d > 0
+            and mom_20d > 0
+        ):
+            return "Strong Buy"
 
-    if (
-        trend in ["Strong Uptrend", "Uptrend"] and
-        grade in ["A+", "A", "B+"] and
-        vol_ratio > 1.0 and
-        40 <= rsi <= 75
-    ):
-        return "Buy"
+        # Buy: masih bagus tapi sedikit kurang ideal
+        if (
+            grade in ["A+", "A", "B+"]
+            and vol_ratio > 1.0
+            and 40 <= rsi <= 75
+            and mom_20d >= 0
+        ):
+            return "Buy"
 
-    if trend == "Sideways" and grade in ["B+", "B", "C"]:
+        # Uptrend tapi mulai lelah / berisiko entry baru
+        if rsi > 75 or mom_5d < 0 or vol_ratio < 1.0:
+            return "Take Profit / Wait"
+
+        # Default di uptrend: hold
         return "Hold"
 
-    return "Sell"
+    # 2) SIDEWAYS
+    if trend == "Sideways":
+        if grade in ["A+", "A", "B+"]:
+            return "Buy on Dip"
+        return "Hold"
+
+    # 3) DOWNTREND
+    if trend == "Downtrend":
+        # Spekulatif: kemungkinan reversal
+        if grade in ["A+", "A"] and rsi < 35 and mom_20d > -5:
+            return "Speculative Buy"
+        return "Sell"
+
+    # Fallback jika trend tidak dikenal
+    return "Hold"
 
 def compute_trade_plan(df, strategy, trend):
     r = df.iloc[-1]
@@ -1135,447 +1158,4 @@ if "Single Stock" in menu:
             if df is None:
                 st.error("❌ Failed to fetch data")
             else:
-                result = process_ticker(ticker_full, strategy_single, period)
-                if result is None:
-                    st.error("❌ Analysis failed or stock rejected by filters")
-                    st.markdown("### 📊 Chart (For Reference)")
-                    chart = create_chart(df, selected)
-                    if chart:
-                        st.plotly_chart(chart, use_container_width=True)
-                else:
-                    st.markdown("### 📊 Interactive Chart")
-                    chart = create_chart(df, selected)
-                    if chart:
-                        st.plotly_chart(chart, use_container_width=True)
-
-                    st.markdown(f"## 💎 {result['Ticker']}")
-                    colA, colB, colC, colD = st.columns(4)
-                    colA.metric("Price", f"Rp {result['Price']:,.0f}")
-                    colB.metric("Score", f"{result['Score']}/100")
-                    colC.metric("Confidence", f"{result['Confidence']}%")
-                    colD.metric("Grade", result['Grade'])
-
-                    colE, colF = st.columns(2)
-                    colE.metric("Trend", result['Trend'])
-                    colF.metric("Signal", result['Signal'])
-
-                    tp3_text = ""
-                    if 'TP3' in result and result['TP3']:
-                        tp3_text = f"**TP3:** Rp {result['TP3']:,.0f}\n"
-
-                    st.success(f"""
-                    **🎯 TRADE PLAN ({strategy_single}):**
-
-                    • **Entry Ideal:** Rp {result['Entry']:,.0f}  
-                    • **Entry Agresif:** Rp {result['EntryAggressive']:,.0f}  
-
-                    • **TP1:** Rp {result['TP1']:,.0f}  
-                    • **TP2:** Rp {result['TP2']:,.0f}  
-                    {tp3_text if tp3_text else ""}• **Stop Loss:** Rp {result['SL']:,.0f}  
-
-                    **Signal:** {result['Signal']} | **Trend:** {result['Trend']}
-                    """)
-
-                    with st.expander("📋 Technical Details"):
-                        for k, v in result['Details'].items():
-                            st.caption(f"• **{k}**: {v}")
-
-elif "BPJS" in menu:
-    st.markdown("### ⚡ BPJS - Beli Pagi Jual Sore")
-
-    if is_bpjs_time():
-        st.success("✅ OPTIMAL TIME! (09:00-10:00 WIB)")
-    else:
-        st.warning("⏰ Best time: 09:00-10:00 WIB")
-
-    st.info("""
-    **Strategy:**
-    - Entry: 09:00-09:30 WIB
-    - Exit: Same day 14:30-15:15
-    - Target: 3-5% intraday
-    - Focus: Oversold stocks with volume surge
-    - Risk: High volatility, fast execution needed
-    """)
-
-    if st.button("🚀 SCAN BPJS", type="primary"):
-        df1, df2 = scan_stocks(tickers, "BPJS", period, limit1, limit2)
-
-        if df2.empty:
-            st.warning("⚠️ No A/B grade BPJS setups found today")
-            if not df1.empty:
-                with st.expander(f"📊 Stage 1: {len(df1)} Lower-Grade Candidates"):
-                    st.dataframe(df1, use_container_width=True)
-        else:
-            st.markdown(f"### 🏆 TOP {len(df2)} BPJS PICKS")
-            create_csv_download(df2, "BPJS")
-
-            for idx, row in df2.iterrows():
-                emoji = "⚡" if row['Grade'] in ['A+','A'] else "🔸"
-                with st.expander(
-                    f"{emoji} **{row['Ticker']}** | Grade **{row['Grade']}** | "
-                    f"Score: {row['Score']}/100 | Signal: {row['Signal']} | Trend: {row['Trend']}",
-                    expanded=True
-                ):
-                    c1, c2, c3, c4 = st.columns(4)
-                    c1.metric("Price", f"Rp {row['Price']:,.0f}")
-                    c2.metric("Score", f"{row['Score']}")
-                    c3.metric("Confidence", f"{row['Confidence']}%")
-                    c4.metric("Grade", row['Grade'])
-
-                    c5, c6 = st.columns(2)
-                    c5.metric("Trend", row['Trend'])
-                    c6.metric("Signal", row['Signal'])
-
-                    st.success(f"""
-                    **🎯 BPJS TRADE PLAN (Intraday):**
-
-                    • **Entry Ideal:** Rp {row['Entry']:,.0f}  
-                    • **Entry Agresif:** Rp {row['EntryAggressive']:,.0f}  
-
-                    • **TP1 (Target utama):** Rp {row['TP1']:,.0f}  
-                    • **TP2 (Maksimal):** Rp {row['TP2']:,.0f}  
-
-                    • **Stop Loss:** Rp {row['SL']:,.0f}  
-
-                    ⏰ **EXIT SAME DAY sebelum 15:00 WIB!**
-                    """)
-
-                    st.markdown("**Analysis:**")
-                    for k, v in row['Details'].items():
-                        st.caption(f"• **{k}**: {v}")
-
-elif "BSJP" in menu:
-    st.markdown("### 🌙 BSJP - Beli Sore Jual Pagi")
-
-    if is_bsjp_time():
-        st.success("✅ OPTIMAL TIME! (14:00-15:30 WIB)")
-    else:
-        st.warning("⏰ Best time: 14:00-15:30 WIB")
-
-    st.info("""
-    **Strategy:**
-    - Entry: 14:00-15:20 WIB (gap down stocks)
-    - Exit: Next morning 09:30-10:30
-    - Target: 3-5% gap recovery
-    - Risk: Overnight holding risk
-    """)
-
-    if st.button("🚀 SCAN BSJP", type="primary"):
-        df1, df2 = scan_stocks(tickers, "BSJP", period, limit1, limit2)
-
-        if df2.empty:
-            st.warning("⚠️ No A/B grade BSJP setups found")
-            if not df1.empty:
-                with st.expander(f"📊 Stage 1: {len(df1)} Lower-Grade Candidates"):
-                    st.dataframe(df1, use_container_width=True)
-        else:
-            st.markdown(f"### 🏆 TOP {len(df2)} BSJP PICKS")
-            create_csv_download(df2, "BSJP")
-
-            for idx, row in df2.iterrows():
-                emoji = "🌙" if row['Grade'] in ['A+','A'] else "🔸"
-                with st.expander(
-                    f"{emoji} **{row['Ticker']}** | Grade **{row['Grade']}** | "
-                    f"Score: {row['Score']}/100 | Signal: {row['Signal']} | Trend: {row['Trend']}",
-                    expanded=True
-                ):
-                    c1, c2, c3, c4 = st.columns(4)
-                    c1.metric("Price", f"Rp {row['Price']:,.0f}")
-                    c2.metric("Score", f"{row['Score']}")
-                    c3.metric("Confidence", f"{row['Confidence']}%")
-                    c4.metric("Grade", row['Grade'])
-
-                    c5, c6 = st.columns(2)
-                    c5.metric("Trend", row['Trend'])
-                    c6.metric("Signal", row['Signal'])
-
-                    st.success(f"""
-                    **🌙 BSJP TRADE PLAN (Overnight):**
-
-                    • **Entry Ideal (Sore):** Rp {row['Entry']:,.0f}  
-                    • **Entry Agresif:** Rp {row['EntryAggressive']:,.0f}  
-
-                    • **TP1 (Pagi):** Rp {row['TP1']:,.0f}  
-                    • **TP2 (Maksimal):** Rp {row['TP2']:,.0f}  
-
-                    • **Stop Loss:** Rp {row['SL']:,.0f}  
-
-                    ⏰ **Jual besok pagi jam 09:30–10:30 WIB**
-                    """)
-
-                    st.markdown("**Analysis:**")
-                    for k, v in row['Details'].items():
-                        st.caption(f"• **{k}**: {v}")
-
-elif "Bandar" in menu:
-    st.markdown("### 🔮 Bandar Tracking - Wyckoff Smart Money")
-
-    st.info("""
-    Wyckoff:
-    - 🟢 ACCUMULATION = BUY
-    - 🚀 MARKUP = HOLD
-    - 🔴 DISTRIBUTION = SELL
-    - ⚫ MARKDOWN = AVOID
-    """)
-
-    if st.button("🚀 SCAN BANDAR", type="primary"):
-        df1, df2 = scan_stocks(tickers, "Bandar", period, limit1, limit2)
-
-        if df2.empty:
-            st.warning("⚠️ No strong A/B grade accumulation signals")
-            if not df1.empty:
-                with st.expander(f"📊 Stage 1: {len(df1)} Weaker Signals"):
-                    st.dataframe(df1, use_container_width=True)
-        else:
-            st.markdown(f"### 🏆 TOP {len(df2)} WYCKOFF SIGNALS")
-            create_csv_download(df2, "BANDAR")
-
-            for idx, row in df2.iterrows():
-                phase = row['Details'].get('Phase', '')
-                signal_phase = row['Details'].get('Signal', '')
-
-                if "Accumulation" in phase:
-                    emoji = "🟢"
-                    expanded = True
-                elif "Markup" in phase:
-                    emoji = "🚀"
-                    expanded = True
-                elif "Distribution" in phase:
-                    emoji = "🔴"
-                    expanded = False
-                else:
-                    emoji = "⚪"
-                    expanded = False
-
-                with st.expander(
-                    f"{emoji} **{row['Ticker']}** | {phase} | "
-                    f"Wyckoff: {signal_phase} | Signal: {row['Signal']} | Trend: {row['Trend']}",
-                    expanded=expanded
-                ):
-                    c1, c2, c3, c4 = st.columns(4)
-                    c1.metric("Price", f"Rp {row['Price']:,.0f}")
-                    c2.metric("Score", f"{row['Score']}")
-                    c3.metric("Grade", row['Grade'])
-                    c4.metric("Confidence", f"{row['Confidence']}%")
-
-                    c5, c6 = st.columns(2)
-                    c5.metric("Trend", row['Trend'])
-                    c6.metric("Signal", row['Signal'])
-
-                    if "Accumulation" in phase:
-                        st.success(f"""
-                        🟢 **SMART MONEY ACCUMULATING**
-
-                        • **Entry Ideal:** Rp {row['Entry']:,.0f}  
-                        • **Entry Agresif:** Rp {row['EntryAggressive']:,.0f}  
-
-                        • **TP1:** Rp {row['TP1']:,.0f}  
-                        • **TP2:** Rp {row['TP2']:,.0f}  
-                        {"• **TP3:** Rp "+f"{row['TP3']:,.0f}" if 'TP3' in row and row['TP3'] else ""}
-
-                        • **Stop Loss:** Rp {row['SL']:,.0f}
-                        """)
-                    elif "Markup" in phase:
-                        st.info("🚀 UPTREND ACTIVE - hold & trail stop.")
-                    elif "Distribution" in phase:
-                        st.error("🔴 DISTRIBUTION - SELL / AVOID new entry.")
-                    else:
-                        st.warning("⚪ RANGING - wait, no clear direction.")
-
-                    st.markdown("**Wyckoff Analysis:**")
-                    for k, v in row['Details'].items():
-                        st.caption(f"• **{k}**: {v}")
-
-elif "SWING" in menu:
-    st.markdown("### 🎯 SWING TRADER - Hold 3-5 Days")
-    display_last_scan_info()
-
-    st.info("""
-    Holding 3-5 hari. Fokus trend + momentum.
-    """)
-
-    if st.button("🚀 START SWING SCAN", type="primary"):
-        df1, df2 = scan_stocks(tickers, "Swing", period, limit1, limit2)
-
-        if df2.empty:
-            st.warning("⚠️ No A/B grade swing setups found")
-            if not df1.empty:
-                with st.expander(f"📊 Stage 1: {len(df1)} Lower-Grade Candidates"):
-                    st.dataframe(df1, use_container_width=True)
-        else:
-            st.markdown(f"### 🏆 TOP {len(df2)} SWING PICKS")
-            create_csv_download(df2, "SWING")
-
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Swing Picks", len(df2))
-            c2.metric("Avg Score", f"{df2['Score'].mean():.0f}/100")
-            c3.metric("Avg Confidence", f"{df2['Confidence'].mean():.0f}%")
-            c4.metric("Grade A+/A", len(df2[df2['Grade'].isin(['A+','A'])]))
-
-            for idx, row in df2.iterrows():
-                emoji = "🎯" if row['Grade'] in ['A+','A'] else "🔹"
-                with st.expander(
-                    f"{emoji} **{row['Ticker']}** | Grade **{row['Grade']}** | "
-                    f"Score: {row['Score']}/100 | Signal: {row['Signal']} | Trend: {row['Trend']}",
-                    expanded=True
-                ):
-                    c1, c2, c3, c4 = st.columns(4)
-                    c1.metric("Price", f"Rp {row['Price']:,.0f}")
-                    c2.metric("Score", f"{row['Score']}")
-                    c3.metric("Confidence", f"{row['Confidence']}%")
-                    c4.metric("Grade", row['Grade'])
-
-                    c5, c6 = st.columns(2)
-                    c5.metric("Trend", row['Trend'])
-                    c6.metric("Signal", row['Signal'])
-
-                    tp3_text = ""
-                    if 'TP3' in row and row['TP3']:
-                        tp3_text = f"• **TP3 (Runner):** Rp {row['TP3']:,.0f}\n"
-
-                    st.success(f"""
-                    **🎯 SWING PLAN (3-5 Hari):**
-
-                    • **Entry Ideal:** Rp {row['Entry']:,.0f}  
-                    • **Entry Agresif:** Rp {row['EntryAggressive']:,.0f}  
-
-                    • **TP1 (Day 2-3):** Rp {row['TP1']:,.0f}  
-                    • **TP2 (Day 4-5):** Rp {row['TP2']:,.0f}  
-                    {tp3_text if tp3_text else ""}• **Stop Loss:** Rp {row['SL']:,.0f}
-
-                    ⏰ Hold 3–5 hari, biarkan winner jalan.
-                    """)
-
-                    st.markdown("**Technical Analysis:**")
-                    for k, v in row['Details'].items():
-                        st.caption(f"• **{k}**: {v}")
-
-elif "VALUE" in menu:
-    st.markdown("### 💎 VALUE PLAYS - Undervalued Gems")
-    display_last_scan_info()
-
-    st.info("""
-    Fokus harga murah < Rp 1.000, dekat support, oversold sehat.
-    Holding 5–10 hari.
-    """)
-
-    if st.button("🚀 FIND VALUE PLAYS", type="primary"):
-        df1, df2 = scan_stocks(tickers, "Value", period, limit1, limit2)
-
-        if df2.empty:
-            st.warning("⚠️ No quality value plays found")
-            if not df1.empty:
-                with st.expander(f"📊 Stage 1: {len(df1)} Potential Values"):
-                    st.dataframe(df1, use_container_width=True)
-        else:
-            st.markdown(f"### 💎 TOP {len(df2)} VALUE PLAYS")
-            create_csv_download(df2, "VALUE")
-
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Value Picks", len(df2))
-            c2.metric("Avg Price", f"Rp {df2['Price'].mean():.0f}")
-            c3.metric("Avg Score", f"{df2['Score'].mean():.0f}/100")
-            c4.metric("Grade A/B+", len(df2[df2['Grade'].isin(['A','B+'])]))
-
-            for idx, row in df2.iterrows():
-                emoji = "💎" if row['Grade'] in ['A','B+'] else "💰"
-                with st.expander(
-                    f"{emoji} **{row['Ticker']}** | Rp {row['Price']:,.0f} | "
-                    f"Grade **{row['Grade']}** | Score: {row['Score']}/100 | "
-                    f"Signal: {row['Signal']} | Trend: {row['Trend']}",
-                    expanded=True
-                ):
-                    c1, c2, c3, c4 = st.columns(4)
-                    c1.metric("Price", f"Rp {row['Price']:,.0f}")
-                    c2.metric("Score", f"{row['Score']}")
-                    c3.metric("Confidence", f"{row['Confidence']}%")
-                    c4.metric("Grade", row['Grade'])
-
-                    c5, c6 = st.columns(2)
-                    c5.metric("Trend", row['Trend'])
-                    c6.metric("Signal", row['Signal'])
-
-                    tp3_text = ""
-                    if 'TP3' in row and row['TP3']:
-                        tp3_text = f"• **TP3 (Moon!):** Rp {row['TP3']:,.0f}\n"
-
-                    st.success(f"""
-                    💎 **VALUE PLAY (5–10 Hari):**
-
-                    • **Entry Ideal:** Rp {row['Entry']:,.0f}  
-                    • **Entry Agresif:** Rp {row['EntryAggressive']:,.0f}  
-
-                    • **TP1:** Rp {row['TP1']:,.0f}  
-                    • **TP2:** Rp {row['TP2']:,.0f}  
-                    {tp3_text if tp3_text else ""}• **Stop Loss:** Rp {row['SL']:,.0f}
-
-                    ⏰ Sabar, tunggu reversal 5–10 hari.
-                    """)
-
-                    st.markdown("**Why Undervalued:**")
-                    for k, v in row['Details'].items():
-                        st.caption(f"• **{k}**: {v}")
-
-else:  # SPEED DEFAULT
-    st.markdown("### ⚡ SPEED TRADER - Quick 1-2 Days")
-    display_last_scan_info()
-
-    st.info("""
-    Holding maksimal 1–2 hari, target kecil tapi cepat.
-    """)
-
-    if st.button("🚀 START SPEED SCAN", type="primary"):
-        df1, df2 = scan_stocks(tickers, "General", period, limit1, limit2)
-
-        if df2.empty:
-            st.warning("⚠️ No A/B grade speed setups found")
-            if not df1.empty:
-                with st.expander(f"📊 Stage 1: {len(df1)} Lower-Grade Candidates"):
-                    st.dataframe(df1, use_container_width=True)
-        else:
-            st.markdown(f"### 🏆 TOP {len(df2)} SPEED PICKS")
-            create_csv_download(df2, "SPEED")
-
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Speed Picks", len(df2))
-            c2.metric("Avg Score", f"{df2['Score'].mean():.0f}/100")
-            c3.metric("Avg Confidence", f"{df2['Confidence'].mean():.0f}%")
-            c4.metric("Grade A+/A", len(df2[df2['Grade'].isin(['A+','A'])]))
-
-            for idx, row in df2.iterrows():
-                emoji = "⚡" if row['Grade'] in ['A+','A'] else "🔹"
-                with st.expander(
-                    f"{emoji} **{row['Ticker']}** | Grade **{row['Grade']}** | "
-                    f"Score: {row['Score']}/100 | Signal: {row['Signal']} | Trend: {row['Trend']}",
-                    expanded=True
-                ):
-                    c1, c2, c3, c4 = st.columns(4)
-                    c1.metric("Price", f"Rp {row['Price']:,.0f}")
-                    c2.metric("Score", f"{row['Score']}")
-                    c3.metric("Confidence", f"{row['Confidence']}%")
-                    c4.metric("Grade", row['Grade'])
-
-                    c5, c6 = st.columns(2)
-                    c5.metric("Trend", row['Trend'])
-                    c6.metric("Signal", row['Signal'])
-
-                    st.success(f"""
-                    **⚡ SPEED PLAN (1–2 Hari):**
-
-                    • **Entry Ideal:** Rp {row['Entry']:,.0f}  
-                    • **Entry Agresif:** Rp {row['EntryAggressive']:,.0f}  
-
-                    • **TP1 (Day 1):** Rp {row['TP1']:,.0f}  
-                    • **TP2 (Day 2):** Rp {row['TP2']:,.0f}  
-
-                    • **Stop Loss:** Rp {row['SL']:,.0f}
-
-                    ⏰ EXIT MAX 1–2 HARI!
-                    """)
-
-                    st.markdown("**Technical Analysis:**")
-                    for k, v in row['Details'].items():
-                        st.caption(f"• **{k}**: {v}")
-
-st.markdown("---")
-st.caption("🚀 IDX Power Screener v5.0 STOCKBOT | Educational only, not financial advice.")
+                result = process_ticker(ticker_full
