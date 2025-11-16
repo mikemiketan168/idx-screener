@@ -13,7 +13,7 @@ from plotly.subplots import make_subplots
 
 # ================== BASIC CONFIG ==================
 st.set_page_config(
-    page_title="IDX Power Screener v5.0 STOCKBOT",
+    page_title="IDX Power Screener v5.0",
     page_icon="🚀",
     layout="wide"
 )
