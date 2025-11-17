@@ -480,7 +480,7 @@ def score_general(df):
         elif atr_pct < 1.5: details["ATR"] = f"⚪ Terlalu kalem {atr_pct:.1f}%"
         elif atr_pct > 12: details["ATR"] = f"🔴 Gila {atr_pct:.1f}%"
 
-                # Grade mapping
+        # Grade mapping
         if score >= 85: grade, conf = "A+", 90
         elif score >= 75: grade, conf = "A", 80
         elif score >= 65: grade, conf = "B+", 70
