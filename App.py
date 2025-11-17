@@ -10,6 +10,15 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import os
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import plotly.express as px
+from io import BytesIO
+try:
+    import openpyxl
+    EXCEL_AVAILABLE = True
+except:
+    EXCEL_AVAILABLE = False
+from scipy import stats
+from scipy.signal import find_peaks, argrelextrema
 
 # ================== BASIC CONFIG ==================
 st.set_page_config(
@@ -27,6 +36,18 @@ if "last_scan_strategy" not in st.session_state:
     st.session_state.last_scan_strategy = None
 if "scan_count" not in st.session_state:
     st.session_state.scan_count = 0
+
+# ============= WATCHLIST & PORTFOLIO STATE =============
+if "watchlist" not in st.session_state:
+    st.session_state.watchlist = []
+if "portfolio" not in st.session_state:
+    st.session_state.portfolio = []  # {ticker, buy_price, qty, buy_date}
+if "alerts" not in st.session_state:
+    st.session_state.alerts = []  # {ticker, type, value, condition}
+if "trade_journal" not in st.session_state:
+    st.session_state.trade_journal = []  # {ticker, entry, exit, profit, date, strategy}
+if "comparison_list" not in st.session_state:
+    st.session_state.comparison_list = []
 
 # ============= IHSG MARKET WIDGET =============
 @st.cache_data(ttl=180)
@@ -122,6 +143,139 @@ def display_ihsg_widget():
         unsafe_allow_html=True,
     )
 
+# ============= SECTOR MAPPING =============
+SECTOR_MAP = {
+    # Basic Materials
+    "ADRO": "Mining", "ANTM": "Mining", "PTBA": "Mining", "ITMG": "Mining", "INCO": "Mining",
+    "TINS": "Mining", "MDKA": "Mining", "MEDC": "Mining", "BUMI": "Mining",
+    # Energy
+    "PGAS": "Energy", "ELSA": "Energy", "PGEO": "Energy",
+    # Financials
+    "BBCA": "Banking", "BBRI": "Banking", "BMRI": "Banking", "BBNI": "Banking", "BRIS": "Banking",
+    "BBTN": "Banking", "BJBR": "Banking", "MEGA": "Banking", "BNGA": "Banking",
+    # Consumer
+    "UNVR": "Consumer", "ICBP": "Consumer", "INDF": "Consumer", "GGRM": "Consumer", "HMSP": "Consumer",
+    "KLBF": "Consumer", "CPIN": "Consumer", "JPFA": "Consumer", "SIDO": "Consumer",
+    # Infrastructure
+    "TLKM": "Telco", "EXCL": "Telco", "ISAT": "Telco", "TOWR": "Infrastructure",
+    "JSMR": "Infrastructure", "PTPP": "Infrastructure", "WIKA": "Infrastructure", "WSKT": "Infrastructure",
+    # Property
+    "ASRI": "Property", "BSDE": "Property", "CTRA": "Property", "SMRA": "Property", "PWON": "Property",
+    # Technology
+    "GOTO": "Technology", "BUKA": "Technology", "EMTK": "Technology", "MAPI": "Technology",
+    # Transportation
+    "BIRD": "Transportation", "GIAA": "Transportation", "WEHA": "Transportation",
+    # Automotive
+    "ASII": "Automotive", "AUTO": "Automotive", "UNTR": "Automotive",
+}
+
+# ============= ADVANCED TECHNICAL FUNCTIONS =============
+def detect_support_resistance(df, lookback=20):
+    """Detect support and resistance levels using local minima/maxima."""
+    try:
+        highs = df['High'].values
+        lows = df['Low'].values
+
+        # Find local maxima (resistance)
+        resistance_idx = argrelextrema(highs, np.greater, order=lookback)[0]
+        resistance_levels = highs[resistance_idx]
+
+        # Find local minima (support)
+        support_idx = argrelextrema(lows, np.less, order=lookback)[0]
+        support_levels = lows[support_idx]
+
+        # Get the most recent and significant levels
+        resistances = sorted(resistance_levels[-5:], reverse=True) if len(resistance_levels) > 0 else []
+        supports = sorted(support_levels[-5:], reverse=True) if len(support_levels) > 0 else []
+
+        return {
+            'resistances': resistances[:3],  # Top 3
+            'supports': supports[:3]  # Top 3
+        }
+    except:
+        return {'resistances': [], 'supports': []}
+
+def calculate_fibonacci_levels(df, period=50):
+    """Calculate Fibonacci retracement levels."""
+    try:
+        recent = df.tail(period)
+        high = recent['High'].max()
+        low = recent['Low'].min()
+        diff = high - low
+
+        levels = {
+            '0.0%': high,
+            '23.6%': high - (diff * 0.236),
+            '38.2%': high - (diff * 0.382),
+            '50.0%': high - (diff * 0.5),
+            '61.8%': high - (diff * 0.618),
+            '78.6%': high - (diff * 0.786),
+            '100.0%': low,
+        }
+        return levels
+    except:
+        return {}
+
+def detect_chart_patterns(df, lookback=30):
+    """Simple pattern detection (double top, double bottom, head & shoulders)."""
+    patterns = []
+    try:
+        recent = df.tail(lookback)
+
+        # Find peaks and troughs
+        peaks_idx, _ = find_peaks(recent['High'].values, distance=5)
+        troughs_idx, _ = find_peaks(-recent['Low'].values, distance=5)
+
+        # Double Top
+        if len(peaks_idx) >= 2:
+            last_two_peaks = recent['High'].iloc[peaks_idx[-2:]]
+            if abs(last_two_peaks.iloc[0] - last_two_peaks.iloc[1]) / last_two_peaks.iloc[0] < 0.02:
+                patterns.append("⚠️ Double Top (Bearish)")
+
+        # Double Bottom
+        if len(troughs_idx) >= 2:
+            last_two_troughs = recent['Low'].iloc[troughs_idx[-2:]]
+            if abs(last_two_troughs.iloc[0] - last_two_troughs.iloc[1]) / last_two_troughs.iloc[0] < 0.02:
+                patterns.append("✅ Double Bottom (Bullish)")
+
+        # Head & Shoulders (simplified)
+        if len(peaks_idx) >= 3:
+            last_three_peaks = recent['High'].iloc[peaks_idx[-3:]]
+            if last_three_peaks.iloc[1] > last_three_peaks.iloc[0] and last_three_peaks.iloc[1] > last_three_peaks.iloc[2]:
+                if abs(last_three_peaks.iloc[0] - last_three_peaks.iloc[2]) / last_three_peaks.iloc[0] < 0.03:
+                    patterns.append("⚠️ Head & Shoulders (Bearish)")
+
+        return patterns if patterns else ["No clear pattern detected"]
+    except:
+        return ["Pattern detection failed"]
+
+def calculate_risk_metrics(entry_price, stop_loss, take_profit, capital, risk_pct=2):
+    """Calculate position sizing and risk/reward metrics."""
+    try:
+        risk_per_trade = capital * (risk_pct / 100)
+        risk_per_share = entry_price - stop_loss
+
+        if risk_per_share <= 0:
+            return None
+
+        position_size = int(risk_per_trade / risk_per_share)
+        total_investment = position_size * entry_price
+
+        potential_profit = (take_profit - entry_price) * position_size
+        potential_loss = risk_per_share * position_size
+
+        rr_ratio = potential_profit / potential_loss if potential_loss > 0 else 0
+
+        return {
+            'position_size': position_size,
+            'total_investment': total_investment,
+            'potential_profit': potential_profit,
+            'potential_loss': potential_loss,
+            'rr_ratio': rr_ratio
+        }
+    except:
+        return None
+
 # ============= LOAD TICKERS =============
 def load_tickers():
     """Load daftar saham IDX dari json atau fallback list."""
@@ -151,8 +305,8 @@ def get_jakarta_time():
     return datetime.now(timezone(timedelta(hours=7)))
 
 # ============= CHART VISUALIZATION =============
-def create_chart(df, ticker, period_days=60):
-    """Create interactive chart with technical indicators."""
+def create_chart(df, ticker, period_days=60, show_sr=True, show_fib=False):
+    """Create interactive chart with technical indicators, S/R, and Fibonacci."""
     try:
         df_chart = df.tail(period_days).copy()
 
@@ -198,6 +352,25 @@ def create_chart(df, ticker, period_days=60):
                     row=1,
                     col=1,
                 )
+
+        # Add Support & Resistance
+        if show_sr:
+            sr_levels = detect_support_resistance(df_chart)
+            for i, res in enumerate(sr_levels['resistances']):
+                fig.add_hline(y=res, line_dash="dash", line_color="#ef4444",
+                             opacity=0.5, annotation_text=f"R{i+1}", row=1, col=1)
+            for i, sup in enumerate(sr_levels['supports']):
+                fig.add_hline(y=sup, line_dash="dash", line_color="#22c55e",
+                             opacity=0.5, annotation_text=f"S{i+1}", row=1, col=1)
+
+        # Add Fibonacci Levels
+        if show_fib:
+            fib_levels = calculate_fibonacci_levels(df_chart)
+            fib_colors = ['#8b5cf6', '#a78bfa', '#c4b5fd', '#ddd6fe', '#c4b5fd', '#a78bfa', '#8b5cf6']
+            for idx, (level_name, level_value) in enumerate(fib_levels.items()):
+                fig.add_hline(y=level_value, line_dash="dot",
+                             line_color=fib_colors[idx % len(fib_colors)],
+                             opacity=0.4, annotation_text=level_name, row=1, col=1)
 
         colors_vol = [
             "#ef4444" if df_chart["Close"].iloc[i] < df_chart["Open"].iloc[i] else "#22c55e"
@@ -747,6 +920,127 @@ def display_last_scan_info():
         unsafe_allow_html=True,
     )
 
+# ============= EXPORT FUNCTIONS =============
+def export_to_excel(df, filename="idx_screener_results.xlsx"):
+    """Export dataframe to Excel with formatting."""
+    if not EXCEL_AVAILABLE:
+        return None
+
+    try:
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df.to_excel(writer, sheet_name='Results', index=False)
+
+            workbook = writer.book
+            worksheet = writer.sheets['Results']
+
+            # Auto-adjust column width
+            for idx, col in enumerate(df.columns):
+                max_length = max(
+                    df[col].astype(str).apply(len).max(),
+                    len(col)
+                ) + 2
+                worksheet.column_dimensions[chr(65 + idx)].width = min(max_length, 30)
+
+        return output.getvalue()
+    except:
+        return None
+
+# ============= MULTI-TIMEFRAME ANALYSIS =============
+def fetch_multi_timeframe(ticker):
+    """Fetch data for multiple timeframes."""
+    try:
+        import yfinance as yf
+        stock = yf.Ticker(ticker)
+
+        # Daily, Weekly, Monthly
+        daily = stock.history(period="3mo", interval="1d")
+        weekly = stock.history(period="1y", interval="1wk")
+        monthly = stock.history(period="5y", interval="1mo")
+
+        results = {}
+        for name, data in [("Daily", daily), ("Weekly", weekly), ("Monthly", monthly)]:
+            if not data.empty and len(data) > 20:
+                # Calculate basic trend
+                close = data['Close']
+                ema20 = close.ewm(span=20, adjust=False).mean()
+                ema50 = close.ewm(span=50, adjust=False).mean() if len(data) >= 50 else ema20
+
+                last_close = close.iloc[-1]
+                last_ema20 = ema20.iloc[-1]
+                last_ema50 = ema50.iloc[-1]
+
+                trend = "Uptrend" if last_close > last_ema20 > last_ema50 else \
+                        "Sideways" if abs(last_close - last_ema20) / last_close < 0.03 else "Downtrend"
+
+                results[name] = {
+                    "trend": trend,
+                    "price": last_close,
+                    "ema20": last_ema20,
+                    "ema50": last_ema50,
+                    "change_pct": ((last_close - data['Close'].iloc[0]) / data['Close'].iloc[0] * 100)
+                }
+
+        return results
+    except:
+        return {}
+
+# ============= SECTOR ANALYSIS =============
+def analyze_sectors(df_results):
+    """Analyze performance by sector."""
+    sector_data = []
+
+    for _, row in df_results.iterrows():
+        ticker = row['Ticker']
+        sector = SECTOR_MAP.get(ticker, "Other")
+        sector_data.append({
+            'Ticker': ticker,
+            'Sector': sector,
+            'Score': row.get('Score', 0),
+            'Grade': row.get('Grade', 'N/A'),
+            'Signal': row.get('Signal', 'N/A')
+        })
+
+    sector_df = pd.DataFrame(sector_data)
+    sector_summary = sector_df.groupby('Sector').agg({
+        'Score': 'mean',
+        'Ticker': 'count'
+    }).rename(columns={'Ticker': 'Count'}).sort_values('Score', ascending=False)
+
+    return sector_summary
+
+def create_sector_heatmap(df_results):
+    """Create sector performance heatmap."""
+    sector_data = []
+    for _, row in df_results.iterrows():
+        ticker = row['Ticker']
+        sector = SECTOR_MAP.get(ticker, "Other")
+        sector_data.append({
+            'Ticker': ticker,
+            'Sector': sector,
+            'Score': row.get('Score', 0)
+        })
+
+    if not sector_data:
+        return None
+
+    df_sector = pd.DataFrame(sector_data)
+    sector_avg = df_sector.groupby('Sector')['Score'].mean().reset_index()
+    sector_avg['Count'] = df_sector.groupby('Sector').size().values
+
+    fig = px.treemap(
+        sector_avg,
+        path=['Sector'],
+        values='Count',
+        color='Score',
+        color_continuous_scale='RdYlGn',
+        title='Sector Performance Heatmap',
+        labels={'Score': 'Avg Score', 'Count': 'Stock Count'}
+    )
+
+    fig.update_layout(height=500, template="plotly_dark")
+    return fig
+
 # ============= UI =============
 st.title("⚡ IDX Power Screener – EXTREME BUILD")
 st.caption("Gaya trader cepat 1–3 hari • Anti saham tuyul • Fokus A+/A & Strong Buy")
@@ -772,6 +1066,13 @@ with st.sidebar:
             "⚡ BPJS (Beli pagi jual sore)",
             "💎 Saham Masih Murah (Value)",
             "🔮 Bandarmology",
+            "---",
+            "📝 Watchlist & Portfolio",
+            "🔬 Stock Comparison",
+            "🗺️ Sector Analysis",
+            "💰 Risk Calculator",
+            "📓 Trade Journal",
+            "⏰ Multi-Timeframe",
         ],
     )
 
@@ -889,14 +1190,31 @@ if menu == "🔎 Screen ALL IDX":
                     height=380,
                 )
 
-                csv = elite_df.to_csv(index=False)
-                ts = datetime.now().strftime("%Y%m%d_%H%M")
-                st.download_button(
-                    "💾 Download Elite Picks (CSV)",
-                    data=csv,
-                    file_name=f"IDX_elite_{strat_key}_{ts}.csv",
-                    mime="text/csv",
-                )
+                # Download options
+                col_dl1, col_dl2 = st.columns(2)
+
+                with col_dl1:
+                    csv = elite_df.to_csv(index=False)
+                    ts = datetime.now().strftime("%Y%m%d_%H%M")
+                    st.download_button(
+                        "💾 Download Elite Picks (CSV)",
+                        data=csv,
+                        file_name=f"IDX_elite_{strat_key}_{ts}.csv",
+                        mime="text/csv",
+                    )
+
+                with col_dl2:
+                    if EXCEL_AVAILABLE:
+                        excel_data = export_to_excel(elite_df, f"IDX_elite_{strat_key}_{ts}.xlsx")
+                        if excel_data:
+                            st.download_button(
+                                "📊 Download Excel (Formatted)",
+                                data=excel_data,
+                                file_name=f"IDX_elite_{strat_key}_{ts}.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            )
+                    else:
+                        st.info("Excel export not available")
 
 # ------- SINGLE STOCK ANALYSIS -------
 elif menu == "🔍 Single Stock":
@@ -913,6 +1231,13 @@ elif menu == "🔍 Single Stock":
         ["Speed", "BPJS", "BSJP", "Swing", "Value", "Bandar"],
     )
 
+    # Chart options
+    col_opt1, col_opt2 = st.columns(2)
+    with col_opt1:
+        show_sr = st.checkbox("Show Support/Resistance", value=True)
+    with col_opt2:
+        show_fib = st.checkbox("Show Fibonacci Levels", value=False)
+
     if st.button("🔍 ANALYZE", type="primary"):
         ticker_full = selected if selected.endswith(".JK") else f"{selected}.JK"
         with st.spinner(f"Menganalisa {selected}..."):
@@ -926,9 +1251,42 @@ elif menu == "🔍 Single Stock":
             last_row = df.iloc[-1]
 
             st.markdown("### 📊 Chart & Price Action")
-            chart = create_chart(df, selected)
+            chart = create_chart(df, selected, show_sr=show_sr, show_fib=show_fib)
             if chart:
                 st.plotly_chart(chart, use_container_width=True)
+
+            # Advanced Analysis
+            col_adv1, col_adv2 = st.columns(2)
+
+            with col_adv1:
+                st.markdown("### 🎯 Support & Resistance")
+                sr_levels = detect_support_resistance(df)
+                if sr_levels['resistances']:
+                    st.write("**Resistance Levels:**")
+                    for i, r in enumerate(sr_levels['resistances']):
+                        st.caption(f"R{i+1}: Rp {r:,.0f}")
+                if sr_levels['supports']:
+                    st.write("**Support Levels:**")
+                    for i, s in enumerate(sr_levels['supports']):
+                        st.caption(f"S{i+1}: Rp {s:,.0f}")
+
+            with col_adv2:
+                st.markdown("### 📐 Fibonacci Levels")
+                fib_levels = calculate_fibonacci_levels(df)
+                if fib_levels:
+                    for level, value in fib_levels.items():
+                        st.caption(f"{level}: Rp {value:,.0f}")
+
+            # Pattern Detection
+            st.markdown("### 🔍 Chart Pattern Detection")
+            patterns = detect_chart_patterns(df)
+            for pattern in patterns:
+                if "Bullish" in pattern:
+                    st.success(pattern)
+                elif "Bearish" in pattern:
+                    st.warning(pattern)
+                else:
+                    st.info(pattern)
 
             if result is None:
                 st.warning("Saham ini dibuang oleh filter (grade / volume / trend).")
@@ -944,14 +1302,14 @@ elif menu == "🔍 Single Stock":
                     f"""
                     **TRADE PLAN ({strat_single}) – gaya cepat 1–3 hari**
 
-                    • Entry Ideal: **Rp {result['Entry']:,.0f}**  
-                    • Entry Agresif (chase): **Rp {result['Entry_Aggressive']:,.0f}**  
+                    • Entry Ideal: **Rp {result['Entry']:,.0f}**
+                    • Entry Agresif (chase): **Rp {result['Entry_Aggressive']:,.0f}**
 
-                    • TP1: **Rp {result['TP1']:,.0f}**  
-                    • TP2: **Rp {result['TP2']:,.0f}**  
-                    • TP3: **Rp {result['TP3']:,.0f}**  
+                    • TP1: **Rp {result['TP1']:,.0f}**
+                    • TP2: **Rp {result['TP2']:,.0f}**
+                    • TP3: **Rp {result['TP3']:,.0f}**
 
-                    • Cut Loss: **Rp {result['CL']:,.0f}**  
+                    • Cut Loss: **Rp {result['CL']:,.0f}**
 
                     ⏰ Saran: maksimal hold 1–3 hari, disiplin pada plan & CL.
                     """
@@ -960,6 +1318,14 @@ elif menu == "🔍 Single Stock":
                 st.markdown("### 📌 Technical Notes")
                 for k, v in result["Details"].items():
                     st.caption(f"• **{k}**: {v}")
+
+                # Quick add to watchlist
+                col_w1, col_w2 = st.columns([3, 1])
+                with col_w2:
+                    if st.button(f"📝 Add {selected} to Watchlist", key="quick_watchlist"):
+                        if selected not in st.session_state.watchlist:
+                            st.session_state.watchlist.append(selected)
+                            st.success(f"Added to watchlist!")
 
 # ------- BSJP SHORTCUT -------
 elif menu == "🌙 BSJP (Beli sore jual pagi)":
@@ -1123,6 +1489,444 @@ elif menu == "🔮 Bandarmology":
                 ],
                 use_container_width=True,
             )
+
+# ------- WATCHLIST & PORTFOLIO -------
+elif menu == "📝 Watchlist & Portfolio":
+    st.markdown("## 📝 Watchlist & Portfolio Management")
+
+    tab1, tab2 = st.tabs(["📋 Watchlist", "💼 Portfolio"])
+
+    with tab1:
+        st.markdown("### 📋 Your Watchlist")
+
+        # Add to watchlist
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            ticker_to_add = st.selectbox("Add stock to watchlist",
+                                        [t.replace(".JK", "") for t in tickers],
+                                        key="watchlist_add")
+        with col2:
+            st.write("")
+            st.write("")
+            if st.button("➕ Add", key="add_watchlist"):
+                if ticker_to_add not in st.session_state.watchlist:
+                    st.session_state.watchlist.append(ticker_to_add)
+                    st.success(f"Added {ticker_to_add} to watchlist!")
+                else:
+                    st.warning("Already in watchlist!")
+
+        # Display watchlist
+        if st.session_state.watchlist:
+            st.markdown(f"**Tracking {len(st.session_state.watchlist)} stocks:**")
+
+            watchlist_data = []
+            for ticker in st.session_state.watchlist:
+                ticker_full = f"{ticker}.JK"
+                df = fetch_data(ticker_full, "1mo")
+                if df is not None:
+                    last = df.iloc[-1]
+                    prev = df.iloc[-2] if len(df) > 1 else last
+                    change_pct = ((last['Close'] - prev['Close']) / prev['Close'] * 100)
+
+                    watchlist_data.append({
+                        'Ticker': ticker,
+                        'Price': f"Rp {last['Close']:,.0f}",
+                        'Change': f"{change_pct:+.2f}%",
+                        'RSI': f"{last['RSI']:.1f}",
+                        'Volume': f"{last['Volume']:,.0f}"
+                    })
+
+            if watchlist_data:
+                wl_df = pd.DataFrame(watchlist_data)
+                st.dataframe(wl_df, use_container_width=True, height=300)
+
+            # Remove from watchlist
+            to_remove = st.selectbox("Remove from watchlist", st.session_state.watchlist, key="remove_wl")
+            if st.button("🗑️ Remove", key="remove_watchlist"):
+                st.session_state.watchlist.remove(to_remove)
+                st.success(f"Removed {to_remove}!")
+                st.rerun()
+        else:
+            st.info("Your watchlist is empty. Add stocks to track them!")
+
+    with tab2:
+        st.markdown("### 💼 Your Portfolio")
+
+        # Add position
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            port_ticker = st.selectbox("Ticker", [t.replace(".JK", "") for t in tickers], key="port_ticker")
+        with col2:
+            buy_price = st.number_input("Buy Price", min_value=1, value=1000, step=10, key="buy_price")
+        with col3:
+            qty = st.number_input("Quantity", min_value=1, value=100, step=100, key="qty")
+        with col4:
+            st.write("")
+            st.write("")
+            if st.button("➕ Add Position", key="add_port"):
+                st.session_state.portfolio.append({
+                    'ticker': port_ticker,
+                    'buy_price': buy_price,
+                    'qty': qty,
+                    'buy_date': datetime.now().strftime('%Y-%m-%d')
+                })
+                st.success(f"Added {qty} shares of {port_ticker}!")
+
+        # Display portfolio
+        if st.session_state.portfolio:
+            portfolio_data = []
+            total_value = 0
+            total_cost = 0
+
+            for pos in st.session_state.portfolio:
+                ticker_full = f"{pos['ticker']}.JK"
+                df = fetch_data(ticker_full, "1mo")
+                if df is not None:
+                    current_price = df.iloc[-1]['Close']
+                    cost = pos['buy_price'] * pos['qty']
+                    value = current_price * pos['qty']
+                    profit = value - cost
+                    profit_pct = (profit / cost * 100)
+
+                    total_value += value
+                    total_cost += cost
+
+                    portfolio_data.append({
+                        'Ticker': pos['ticker'],
+                        'Buy Price': f"Rp {pos['buy_price']:,.0f}",
+                        'Current': f"Rp {current_price:,.0f}",
+                        'Qty': pos['qty'],
+                        'Cost': f"Rp {cost:,.0f}",
+                        'Value': f"Rp {value:,.0f}",
+                        'P/L': f"Rp {profit:,.0f}",
+                        'P/L %': f"{profit_pct:+.2f}%",
+                        'Date': pos['buy_date']
+                    })
+
+            if portfolio_data:
+                port_df = pd.DataFrame(portfolio_data)
+                st.dataframe(port_df, use_container_width=True, height=300)
+
+                total_profit = total_value - total_cost
+                total_profit_pct = (total_profit / total_cost * 100) if total_cost > 0 else 0
+
+                col1, col2, col3, col4 = st.columns(4)
+                col1.metric("Total Cost", f"Rp {total_cost:,.0f}")
+                col2.metric("Current Value", f"Rp {total_value:,.0f}")
+                col3.metric("Total P/L", f"Rp {total_profit:,.0f}", delta=f"{total_profit_pct:.2f}%")
+                col4.metric("Positions", len(st.session_state.portfolio))
+
+            if st.button("🗑️ Clear All Positions", key="clear_port"):
+                st.session_state.portfolio = []
+                st.success("Portfolio cleared!")
+                st.rerun()
+        else:
+            st.info("Your portfolio is empty. Add positions to track P/L!")
+
+# ------- STOCK COMPARISON -------
+elif menu == "🔬 Stock Comparison":
+    st.markdown("## 🔬 Stock Comparison Tool")
+
+    st.info("Compare up to 5 stocks side-by-side")
+
+    # Select stocks to compare
+    col1, col2 = st.columns([4, 1])
+    with col1:
+        selected_stock = st.selectbox("Select stock to add", [t.replace(".JK", "") for t in tickers], key="comp_select")
+    with col2:
+        st.write("")
+        st.write("")
+        if st.button("➕ Add", key="add_comparison"):
+            if len(st.session_state.comparison_list) < 5:
+                if selected_stock not in st.session_state.comparison_list:
+                    st.session_state.comparison_list.append(selected_stock)
+                    st.success(f"Added {selected_stock}!")
+                else:
+                    st.warning("Already in comparison!")
+            else:
+                st.error("Maximum 5 stocks!")
+
+    if st.session_state.comparison_list:
+        st.markdown(f"**Comparing {len(st.session_state.comparison_list)} stocks:** {', '.join(st.session_state.comparison_list)}")
+
+        if st.button("🗑️ Clear All", key="clear_comp"):
+            st.session_state.comparison_list = []
+            st.rerun()
+
+        # Fetch and compare
+        comparison_data = []
+        for ticker in st.session_state.comparison_list:
+            ticker_full = f"{ticker}.JK"
+            df = fetch_data(ticker_full, "3mo")
+            if df is not None:
+                result = process_ticker(ticker_full, "Speed", "3mo")
+                if result:
+                    comparison_data.append(result)
+
+        if comparison_data:
+            comp_df = pd.DataFrame(comparison_data)
+            st.dataframe(comp_df[['Ticker', 'Price', 'Score', 'Grade', 'Trend', 'Signal',
+                                   'Entry', 'TP1', 'TP2', 'CL']], use_container_width=True)
+
+            # Price comparison chart
+            st.markdown("### 📊 Price Comparison (Normalized)")
+            fig = go.Figure()
+            for ticker in st.session_state.comparison_list:
+                ticker_full = f"{ticker}.JK"
+                df = fetch_data(ticker_full, "3mo")
+                if df is not None:
+                    # Normalize to 100
+                    normalized = (df['Close'] / df['Close'].iloc[0]) * 100
+                    fig.add_trace(go.Scatter(x=df.index, y=normalized, name=ticker, mode='lines'))
+
+            fig.update_layout(
+                height=400,
+                template="plotly_dark",
+                yaxis_title="Normalized Price (Base=100)",
+                hovermode="x unified"
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+# ------- SECTOR ANALYSIS -------
+elif menu == "🗺️ Sector Analysis":
+    st.markdown("## 🗺️ Sector Analysis")
+
+    if st.session_state.last_scan_df is not None and not st.session_state.last_scan_df.empty:
+        df_results = st.session_state.last_scan_df
+
+        st.markdown("### 📊 Sector Performance")
+        sector_summary = analyze_sectors(df_results)
+        st.dataframe(sector_summary, use_container_width=True)
+
+        st.markdown("### 🗺️ Sector Heatmap")
+        heatmap = create_sector_heatmap(df_results)
+        if heatmap:
+            st.plotly_chart(heatmap, use_container_width=True)
+
+        # Best stocks by sector
+        st.markdown("### 🏆 Top Stocks by Sector")
+        for sector in sector_summary.index[:5]:  # Top 5 sectors
+            sector_stocks = df_results[df_results['Ticker'].map(lambda x: SECTOR_MAP.get(x, "Other") == sector)]
+            if not sector_stocks.empty:
+                top_3 = sector_stocks.nlargest(3, 'Score')
+                with st.expander(f"🏢 {sector} - Top 3 Stocks"):
+                    st.dataframe(top_3[['Ticker', 'Price', 'Score', 'Grade', 'Signal', 'Entry', 'TP1']],
+                               use_container_width=True)
+    else:
+        st.info("⚠️ Run a scan first to see sector analysis!")
+
+# ------- RISK CALCULATOR -------
+elif menu == "💰 Risk Calculator":
+    st.markdown("## 💰 Risk Management Calculator")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("### 📊 Input Parameters")
+        capital = st.number_input("Total Capital (Rp)", min_value=1000000, value=10000000, step=1000000)
+        risk_pct = st.slider("Risk per Trade (%)", min_value=0.5, max_value=5.0, value=2.0, step=0.1)
+        entry_price = st.number_input("Entry Price (Rp)", min_value=1, value=1000, step=10)
+        stop_loss = st.number_input("Stop Loss (Rp)", min_value=1, value=950, step=10)
+        take_profit = st.number_input("Take Profit (Rp)", min_value=1, value=1100, step=10)
+
+    with col2:
+        st.markdown("### 📈 Calculation Results")
+
+        if stop_loss >= entry_price:
+            st.error("⚠️ Stop Loss must be below Entry Price!")
+        elif take_profit <= entry_price:
+            st.error("⚠️ Take Profit must be above Entry Price!")
+        else:
+            metrics = calculate_risk_metrics(entry_price, stop_loss, take_profit, capital, risk_pct)
+
+            if metrics:
+                st.success(f"**Position Size:** {metrics['position_size']:,} shares")
+                st.info(f"**Total Investment:** Rp {metrics['total_investment']:,.0f}")
+
+                col_a, col_b = st.columns(2)
+                col_a.metric("Potential Profit", f"Rp {metrics['potential_profit']:,.0f}",
+                           delta=f"+{(metrics['potential_profit']/metrics['total_investment']*100):.1f}%")
+                col_b.metric("Potential Loss", f"Rp {metrics['potential_loss']:,.0f}",
+                           delta=f"-{(metrics['potential_loss']/metrics['total_investment']*100):.1f}%")
+
+                st.metric("Risk/Reward Ratio", f"1 : {metrics['rr_ratio']:.2f}")
+
+                if metrics['rr_ratio'] < 1.5:
+                    st.warning("⚠️ R:R ratio kurang dari 1.5 - Trade kurang optimal!")
+                elif metrics['rr_ratio'] < 2:
+                    st.info("✅ R:R ratio acceptable (1.5-2)")
+                else:
+                    st.success(f"🎯 Excellent R:R ratio! ({metrics['rr_ratio']:.2f}:1)")
+
+    st.markdown("---")
+    st.markdown("### 💡 Risk Management Tips")
+    st.markdown("""
+    - **Never risk more than 2-3% of your capital** on a single trade
+    - **Aim for R:R ratio of at least 1.5:1**, ideally 2:1 or higher
+    - **Always use stop loss** - no exceptions!
+    - **Position sizing is key** - don't over-leverage
+    - **Diversify** - don't put all eggs in one basket
+    """)
+
+# ------- TRADE JOURNAL -------
+elif menu == "📓 Trade Journal":
+    st.markdown("## 📓 Trade Journal & Performance Tracking")
+
+    tab1, tab2 = st.tabs(["📝 Add Trade", "📊 View Journal"])
+
+    with tab1:
+        st.markdown("### 📝 Log New Trade")
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            journal_ticker = st.selectbox("Ticker", [t.replace(".JK", "") for t in tickers], key="journal_ticker")
+            entry = st.number_input("Entry Price", min_value=1, value=1000, step=10, key="journal_entry")
+            strategy = st.selectbox("Strategy", ["BPJS", "BSJP", "Swing", "Value", "Bandar", "Speed"], key="journal_strat")
+        with col2:
+            exit_price = st.number_input("Exit Price", min_value=1, value=1050, step=10, key="journal_exit")
+            qty = st.number_input("Quantity", min_value=1, value=100, step=100, key="journal_qty")
+        with col3:
+            trade_date = st.date_input("Trade Date", key="journal_date")
+
+        if st.button("💾 Save Trade", key="save_trade"):
+            profit = (exit_price - entry) * qty
+            profit_pct = ((exit_price - entry) / entry * 100)
+
+            st.session_state.trade_journal.append({
+                'ticker': journal_ticker,
+                'entry': entry,
+                'exit': exit_price,
+                'qty': qty,
+                'profit': profit,
+                'profit_pct': profit_pct,
+                'strategy': strategy,
+                'date': str(trade_date)
+            })
+            st.success(f"Trade logged! P/L: Rp {profit:,.0f} ({profit_pct:+.2f}%)")
+
+    with tab2:
+        st.markdown("### 📊 Trade History")
+
+        if st.session_state.trade_journal:
+            journal_data = []
+            for trade in st.session_state.trade_journal:
+                journal_data.append({
+                    'Date': trade['date'],
+                    'Ticker': trade['ticker'],
+                    'Strategy': trade['strategy'],
+                    'Entry': f"Rp {trade['entry']:,.0f}",
+                    'Exit': f"Rp {trade['exit']:,.0f}",
+                    'Qty': trade['qty'],
+                    'P/L': f"Rp {trade['profit']:,.0f}",
+                    'P/L %': f"{trade['profit_pct']:+.2f}%"
+                })
+
+            journal_df = pd.DataFrame(journal_data)
+            st.dataframe(journal_df, use_container_width=True, height=400)
+
+            # Statistics
+            st.markdown("### 📈 Performance Statistics")
+            total_trades = len(st.session_state.trade_journal)
+            winning_trades = sum(1 for t in st.session_state.trade_journal if t['profit'] > 0)
+            losing_trades = total_trades - winning_trades
+            win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
+
+            total_profit = sum(t['profit'] for t in st.session_state.trade_journal)
+            avg_profit = total_profit / total_trades if total_trades > 0 else 0
+
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("Total Trades", total_trades)
+            col2.metric("Win Rate", f"{win_rate:.1f}%")
+            col3.metric("Total P/L", f"Rp {total_profit:,.0f}")
+            col4.metric("Avg P/L", f"Rp {avg_profit:,.0f}")
+
+            # P/L Chart
+            if len(st.session_state.trade_journal) > 1:
+                st.markdown("### 📊 Cumulative P/L")
+                cumulative_pl = []
+                running_total = 0
+                for trade in st.session_state.trade_journal:
+                    running_total += trade['profit']
+                    cumulative_pl.append(running_total)
+
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(
+                    y=cumulative_pl,
+                    mode='lines+markers',
+                    name='Cumulative P/L',
+                    line=dict(color='#22c55e' if cumulative_pl[-1] > 0 else '#ef4444', width=3)
+                ))
+                fig.update_layout(height=300, template="plotly_dark", yaxis_title="P/L (Rp)")
+                st.plotly_chart(fig, use_container_width=True)
+
+            if st.button("🗑️ Clear Journal", key="clear_journal"):
+                st.session_state.trade_journal = []
+                st.success("Journal cleared!")
+                st.rerun()
+        else:
+            st.info("No trades logged yet. Start logging your trades to track performance!")
+
+# ------- MULTI-TIMEFRAME ANALYSIS -------
+elif menu == "⏰ Multi-Timeframe":
+    st.markdown("## ⏰ Multi-Timeframe Analysis")
+
+    selected = st.selectbox("Select stock for MTF analysis", [t.replace(".JK", "") for t in tickers])
+
+    if st.button("🔍 Analyze", type="primary"):
+        ticker_full = f"{selected}.JK"
+
+        with st.spinner(f"Analyzing {selected} across multiple timeframes..."):
+            mtf_data = fetch_multi_timeframe(ticker_full)
+
+        if mtf_data:
+            st.markdown(f"### 📊 Multi-Timeframe Analysis: {selected}")
+
+            # Create comparison table
+            mtf_rows = []
+            for tf, data in mtf_data.items():
+                mtf_rows.append({
+                    'Timeframe': tf,
+                    'Trend': data['trend'],
+                    'Price': f"Rp {data['price']:,.0f}",
+                    'EMA20': f"Rp {data['ema20']:,.0f}",
+                    'EMA50': f"Rp {data['ema50']:,.0f}",
+                    'Change %': f"{data['change_pct']:+.2f}%"
+                })
+
+            mtf_df = pd.DataFrame(mtf_rows)
+            st.dataframe(mtf_df, use_container_width=True)
+
+            # Trend alignment check
+            trends = [data['trend'] for data in mtf_data.values()]
+            uptrends = sum(1 for t in trends if t == "Uptrend")
+
+            st.markdown("### 🎯 Timeframe Alignment")
+            if uptrends == 3:
+                st.success("✅ All timeframes aligned UPTREND - Strong bullish signal!")
+            elif uptrends == 2:
+                st.info("🟡 2 out of 3 timeframes uptrend - Moderate bullish")
+            elif uptrends == 1:
+                st.warning("⚠️ Only 1 timeframe uptrend - Mixed signals")
+            else:
+                st.error("🔴 No uptrends - Bearish condition")
+
+            st.markdown("### 💡 Trading Recommendation")
+            if uptrends >= 2:
+                st.success(f"""
+                **GOOD SETUP for {selected}**
+                - Multiple timeframes showing strength
+                - Consider entry on pullback to support
+                - Use higher timeframe trend as confirmation
+                """)
+            else:
+                st.warning(f"""
+                **WAIT for better setup on {selected}**
+                - Timeframes not aligned
+                - High risk of reversal
+                - Better opportunities elsewhere
+                """)
+        else:
+            st.error("Failed to fetch multi-timeframe data.")
 
 st.markdown("---")
 st.caption(

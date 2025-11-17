@@ -4,3 +4,8 @@ numpy
 requests
 yfinance
 plotly
+openpyxl
+scipy
+scikit-learn
+ta-lib-bin; platform_system == "Windows"
+finta
