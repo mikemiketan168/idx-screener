@@ -1106,5 +1106,7 @@ else:
 
 st.markdown("---")
 st.caption(
-    "🚀 IDX Power Screener – EXTREME BUILD • 
+    "🚀 IDX Power Screener - EXTREME BUILD • "
+    "$$$, $$$. $$$"
 )
+
