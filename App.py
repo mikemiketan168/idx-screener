@@ -28,17 +28,10 @@ if "last_scan_strategy" not in st.session_state:
     st.session_state.last_scan_strategy = None
 if "scan_count" not in st.session_state:
     st.session_state.scan_count = 0
-if "performance" not in st.session_state:
-    st.session_state.performance = {
-        "total_scans": 0,
-        "successful_scans": 0,
-        "avg_candidates": 0,
-        "last_scan_duration": 0
-    }
 
 # ============= COMPLETE IDX TICKERS =============
 def load_tickers():
-    """Load complete IDX tickers list - ALL 799 STOCKS"""
+    """Load complete IDX tickers list"""
     complete_tickers = [
         "AALI", "ABBA", "ABDA", "ABMM", "ACES", "ACST", "ADHI", "ADMF", "ADRO", "AGAR",
         "AGII", "AGRO", "AGRS", "AHAP", "AIMS", "AISA", "AKKU", "AKPI", "AKRA", "AKSI",
@@ -122,185 +115,7 @@ def load_tickers():
     
     return [f"{ticker}.JK" for ticker in complete_tickers]
 
-# ============= ENHANCED FILTERING SYSTEM =============
-def apply_enhanced_liquidity_filter(df):
-    """STRICT liquidity filter untuk hindari saham gorengan & tidak likuid"""
-    try:
-        r = df.iloc[-1]
-        price = float(r["Close"])
-        vol_avg = float(df["Volume"].tail(20).mean())
-        vol_today = float(r["Volume"])
-
-        # Filter sangat ketat
-        if price < 100:  # Harga minimal Rp 100
-            return False, "Price < 100 (terlalu murah)"
-        if vol_avg < 1_000_000:  # Volume rata-rata minimal 1 juta lembar
-            return False, "Avg Vol < 1M (illiquid)"
-        if vol_today < 500_000:  # Volume hari ini minimal 500k
-            return False, "Today Vol < 500k (sepi)"
-        
-        turnover = price * vol_avg
-        if turnover < 500_000_000:  # Turnover minimal 500 juta
-            return False, "Turnover < 500M (kecil)"
-
-        # Additional quality checks
-        if len(df) < 100:  # Minimal 100 hari data
-            return False, "Data < 100 days"
-
-        return True, "OK"
-    except Exception:
-        return False, "Error"
-
-def is_quality_stock(ticker):
-    """Pre-filter untuk identifikasi saham quality berdasarkan ticker"""
-    quality_tickers = {
-        # Blue Chips
-        "BBCA", "BBRI", "BMRI", "BBNI", "ASII", "UNVR", "TLKM", "ICBP", 
-        "INDF", "GGRM", "HMSP", "ADRO", "ANTM", "AKRA", "CPIN", "INTP",
-        "ITMG", "JSMR", "KLBF", "LSIP", "PGAS", "PTBA", "SMGR", "TBIG",
-        "TINS", "TKIM", "UNTR", "WIKA", "WSKT", "SRIL", "CTRA", "BRPT",
-        
-        # Liquid Mid Caps
-        "ACES", "ADHI", "AKPI", "AMRT", "BEST", "BPTR", "BRMS", "BSDE",
-        "BUKA", "DMAS", "DOID", "ELSA", "ERAA", "ESSA", "EXCL", "GJTL",
-        "GOTO", "HEXA", "HRUM", "IKAI", "IMPC", "INCO", "INDY", "JPFA",
-        "KAEF", "KBLI", "LION", "LPPF", "MAPI", "MDKA", "MEDC", "MIKA",
-        "MNCN", "MPMX", "MYOR", "PANS", "PEGE", "PGEO", "POWR", "PTPP",
-        "SIDO", "SIMP", "SMRA", "SOCI", "TARA", "TCPI", "TPIA", "ULTJ",
-        "WEGE", "WOOD"
-    }
-    
-    clean_ticker = ticker.replace(".JK", "")
-    return clean_ticker in quality_tickers
-
-# ============= ENHANCED SCORING ENGINE =============
-def score_enhanced_general(df):
-    """Enhanced scoring dengan filter lebih ketat"""
-    try:
-        # Apply strict liquidity filter first
-        ok, reason = apply_enhanced_liquidity_filter(df)
-        if not ok:
-            return 0, {"Rejected": reason}, 0, "F"
-
-        r = df.iloc[-1]
-        price = float(r["Close"])
-        ema9 = float(r["EMA9"]); ema21 = float(r["EMA21"])
-        ema50 = float(r["EMA50"]); ema200 = float(r["EMA200"])
-        rsi = float(r["RSI"]); vol_ratio = float(r["VOL_RATIO"])
-        mom5 = float(r["MOM_5D"]); mom20 = float(r["MOM_20D"])
-        macd = float(r["MACD"]); macd_hist = float(r["MACD_HIST"])
-        atr_pct = float(r["ATR_PCT"])
-
-        details = {}; score = 0
-
-        # STRICT Trend requirements
-        if price < ema50: 
-            return 0, {"Rejected": "Price < EMA50 (downtrend)"}, 0, "F"
-        if price < ema21 < ema50: 
-            return 0, {"Rejected": "Short term downtrend"}, 0, "F"
-
-        # EMA alignment - lebih ketat
-        ema_alignment = 0
-        if ema9 > ema21: ema_alignment += 2  # Lebih berat
-        if ema21 > ema50: ema_alignment += 2
-        if ema50 > ema200: ema_alignment += 1
-        if price > ema9: ema_alignment += 1
-
-        if ema_alignment >= 5:
-            score += 45
-            details["Trend"] = "🟢 Perfect uptrend"
-        elif ema_alignment >= 4:
-            score += 35
-            details["Trend"] = "🟡 Strong uptrend"
-        elif ema_alignment >= 3:
-            score += 20
-            details["Trend"] = "🟠 Moderate uptrend"
-        else:
-            return 0, {"Rejected": "Weak trend structure"}, 0, "F"
-
-        # RSI - lebih selektif
-        if 45 <= rsi <= 65:
-            score += 25
-            details["RSI"] = f"🟢 Ideal {rsi:.0f}"
-        elif 40 <= rsi < 45 or 65 < rsi <= 70:
-            score += 15
-            details["RSI"] = f"🟡 Acceptable {rsi:.0f}"
-        elif rsi > 75:
-            return 0, {"Rejected": f"RSI overbought {rsi:.0f}"}, 0, "F"
-        elif rsi < 35:
-            return 0, {"Rejected": f"RSI oversold {rsi:.0f}"}, 0, "F"
-        else:
-            score += 8
-            details["RSI"] = f"⚪ Neutral {rsi:.0f}"
-
-        # Volume - lebih ketat
-        if vol_ratio > 2.0:
-            score += 20
-            details["Volume"] = f"🟢 Strong volume {vol_ratio:.1f}x"
-        elif vol_ratio > 1.3:
-            score += 15
-            details["Volume"] = f"🟡 Good volume {vol_ratio:.1f}x"
-        elif vol_ratio > 0.8:
-            score += 8
-            details["Volume"] = f"🟠 Moderate {vol_ratio:.1f}x"
-        else:
-            return 0, {"Rejected": f"Low volume {vol_ratio:.1f}x"}, 0, "F"
-
-        # Momentum - lebih selektif
-        if mom5 > 2 and mom20 > 4:
-            score += 15
-            details["Momentum"] = f"🟢 Strong +{mom5:.1f}% (5D)"
-        elif mom5 > 0 and mom20 > 2:
-            score += 10
-            details["Momentum"] = f"🟡 Positive +{mom5:.1f}% (5D)"
-        elif mom20 < -5:
-            return 0, {"Rejected": f"Weak momentum {mom20:.1f}%"}, 0, "F"
-        else:
-            score += 5
-            details["Momentum"] = f"⚪ Neutral +{mom5:.1f}%"
-
-        # MACD
-        if macd > 0 and macd_hist > 0:
-            score += 10
-            details["MACD"] = "🟢 Bullish"
-        elif macd > 0:
-            score += 5
-            details["MACD"] = "🟡 Turning bullish"
-        else:
-            details["MACD"] = "🔴 Bearish"
-
-        # ATR - volatilitas sehat
-        if 1.5 <= atr_pct <= 6:
-            score += 8
-            details["ATR"] = f"🟢 Healthy vol {atr_pct:.1f}%"
-        elif atr_pct > 10:
-            return 0, {"Rejected": f"Too volatile {atr_pct:.1f}%"}, 0, "F"
-        else:
-            details["ATR"] = f"⚪ Normal {atr_pct:.1f}%"
-
-        # Bonus untuk saham quality
-        ticker = "Unknown"
-        try:
-            ticker = [col for col in df.columns if 'Ticker' in col][0]
-            if is_quality_stock(ticker):
-                score += 10
-                details["Quality"] = "🟢 Blue Chip"
-        except:
-            pass
-
-        # Grade mapping - lebih ketat
-        if score >= 90: grade, conf = "A+", 95
-        elif score >= 80: grade, conf = "A", 85
-        elif score >= 70: grade, conf = "B+", 75
-        elif score >= 60: grade, conf = "B", 65
-        elif score >= 50: grade, conf = "C", 55
-        else: grade, conf = "D", max(score, 30)
-
-        return score, details, conf, grade
-    except Exception as e:
-        return 0, {"Error": str(e)}, 0, "F"
-
-# ============= MARKET STATUS & IHSG WIDGET =============
+# ============= MARKET STATUS =============
 def get_market_status():
     """Cek status pasar IDX (Buka/Tutup)"""
     jkt_time = get_jakarta_time()
@@ -316,6 +131,7 @@ def get_market_status():
     else:
         return "🔴 CLOSED", "Pasar tutup • Buka besok 09:00 WIB"
 
+# ============= IHSG WIDGET =============
 @st.cache_data(ttl=180)
 def fetch_ihsg_data():
     """Fetch IHSG data"""
@@ -412,83 +228,224 @@ def display_ihsg_widget():
 def get_jakarta_time():
     return datetime.now(timezone(timedelta(hours=7)))
 
-# ============= FIXED STAGE MANAGEMENT =============
-def manage_stage_filtering(df_all, stage1_limit, stage2_limit, strategy):
-    """Fixed stage filtering system yang benar-benar sinkron"""
-    if df_all.empty:
-        return None, None
-    
-    # Stage 1: Filter basic criteria
-    stage1_criteria = (
-        (df_all["Signal"].isin(["Strong Buy", "Buy"])) &
-        (df_all["Trend"] != "Downtrend") &
-        (df_all["Grade"].isin(["A+", "A", "B+", "B"]))
-    )
-    
-    stage1_df = df_all[stage1_criteria].sort_values("Score", ascending=False)
-    
-    # Apply stage1 limit
-    stage1_actual = stage1_df.head(stage1_limit)
-    
-    # Stage 2: Filter elite dari stage1_actual (bukan dari stage1_df)
-    stage2_criteria = (
-        (stage1_actual["Signal"] == "Strong Buy") &
-        (stage1_actual["Grade"].isin(["A+", "A"]))
-    )
-    
-    stage2_df = stage1_actual[stage2_criteria].sort_values("Score", ascending=False)
-    
-    # Apply stage2 limit
-    stage2_actual = stage2_df.head(stage2_limit)
-    
-    # Display stage information
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("Total Scanned", len(df_all))
-    with col2:
-        st.metric("Stage 1 Candidates", len(stage1_actual))
-    with col3:
-        st.metric("Stage 2 Elite", len(stage2_actual))
-    
-    return stage1_actual, stage2_actual
-
-# ============= KEEP THE REST OF THE CODE THE SAME =============
-# [Data fetching, chart creation, processing functions remain the same...]
-# Hanya mengganti score_general dengan score_enhanced_general di process_ticker
-
-def process_ticker(ticker, strategy, period):
-    """Process single ticker dengan enhanced scoring"""
+# ============= SIMPLE SCORING SYSTEM =============
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_data(ticker, period="3mo"):
+    """Fetch stock data"""
     try:
-        df = fetch_data(ticker, period)
-        if df is None: return None
+        import yfinance as yf
+        stock = yf.Ticker(ticker)
+        hist = stock.history(period=period)
+        return hist
+    except Exception:
+        return None
 
-        # Gunakan enhanced scoring
-        score, details, conf, grade = score_enhanced_general(df)
-
-        if grade not in ["A+", "A", "B+", "B"]:  # Hanya terima grade bagus
+def simple_score(df, ticker):
+    """Simple scoring function"""
+    if df is None or len(df) < 20:
+        return None
+    
+    try:
+        last_close = df['Close'].iloc[-1]
+        volume = df['Volume'].iloc[-1]
+        avg_volume = df['Volume'].tail(20).mean()
+        
+        # Basic filters
+        if volume < 100000 or last_close < 50:
             return None
-
-        last_row = df.iloc[-1]
-        trend = detect_trend(last_row)
-        signal = classify_signal(last_row, score, grade, trend)
-        plan = compute_trade_plan(df, strategy, trend)
-
+            
+        # Simple momentum
+        if len(df) > 5:
+            price_5d_ago = df['Close'].iloc[-6]
+            momentum_5d = (last_close / price_5d_ago - 1) * 100
+        else:
+            momentum_5d = 0
+            
+        if len(df) > 20:
+            price_20d_ago = df['Close'].iloc[-21]
+            momentum_20d = (last_close / price_20d_ago - 1) * 100
+        else:
+            momentum_20d = 0
+            
+        volume_ratio = volume / avg_volume if avg_volume > 0 else 1
+        
+        # Simple score calculation
+        score = 0
+        details = {}
+        
+        # Price momentum
+        if momentum_5d > 5:
+            score += 30
+            details["Momentum"] = f"🟢 Strong +{momentum_5d:.1f}%"
+        elif momentum_5d > 2:
+            score += 20
+            details["Momentum"] = f"🟡 Positive +{momentum_5d:.1f}%"
+        elif momentum_5d > 0:
+            score += 10
+            details["Momentum"] = f"🟠 Neutral +{momentum_5d:.1f}%"
+        else:
+            details["Momentum"] = f"🔴 Negative {momentum_5d:.1f}%"
+            
+        # Volume
+        if volume_ratio > 2:
+            score += 25
+            details["Volume"] = f"🟢 High {volume_ratio:.1f}x"
+        elif volume_ratio > 1.2:
+            score += 20
+            details["Volume"] = f"🟡 Good {volume_ratio:.1f}x"
+        elif volume_ratio > 0.8:
+            score += 15
+            details["Volume"] = f"🟠 Normal {volume_ratio:.1f}x"
+        else:
+            details["Volume"] = f"🔴 Low {volume_ratio:.1f}x"
+            
+        # Trend (simple)
+        if momentum_20d > 10:
+            score += 25
+            details["Trend"] = f"🟢 Uptrend +{momentum_20d:.1f}%"
+        elif momentum_20d > 0:
+            score += 15
+            details["Trend"] = f"🟡 Sideways +{momentum_20d:.1f}%"
+        else:
+            details["Trend"] = f"🔴 Downtrend {momentum_20d:.1f}%"
+            
+        # Price level
+        if last_close > 1000:
+            score += 20
+            details["Price"] = f"🟢 Bluechip Rp {last_close:,.0f}"
+        elif last_close > 500:
+            score += 15
+            details["Price"] = f"🟡 Midcap Rp {last_close:,.0f}"
+        else:
+            score += 10
+            details["Price"] = f"🟠 Smallcap Rp {last_close:,.0f}"
+            
+        # Grade
+        if score >= 80:
+            grade, signal = "A+", "Strong Buy"
+        elif score >= 70:
+            grade, signal = "A", "Buy"
+        elif score >= 60:
+            grade, signal = "B+", "Hold"
+        elif score >= 50:
+            grade, signal = "B", "Hold"
+        else:
+            grade, signal = "C", "Watch"
+            
         return {
-            "Ticker": ticker.replace(".JK", ""), "Price": float(last_row["Close"]),
-            "Score": score, "Confidence": conf, "Grade": grade, "Trend": trend,
-            "Signal": signal, "Entry": plan["entry_ideal"],
-            "Entry_Aggressive": plan["entry_aggressive"], "TP1": plan["tp1"],
-            "TP2": plan["tp2"], "TP3": plan["tp3"], "CL": plan["sl"],
-            "Details": details,
+            "Ticker": ticker.replace(".JK", ""),
+            "Price": last_close,
+            "Score": score,
+            "Grade": grade,
+            "Signal": signal,
+            "Momentum_5D": momentum_5d,
+            "Momentum_20D": momentum_20d,
+            "Volume_Ratio": volume_ratio,
+            "Details": details
         }
     except Exception:
         return None
 
-# [Rest of the code remains the same...]
+def enhanced_scan_universe(tickers, strategy, period):
+    """Enhanced scan dengan performance tracking"""
+    start_time = time.time()
+    results = []
+    
+    with st.status(f"🔍 Scanning {len(tickers)} stocks...", expanded=True) as status:
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futures = {executor.submit(process_ticker, t, strategy, period): t for t in tickers}
+            
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            for i, future in enumerate(as_completed(futures)):
+                progress = (i + 1) / len(futures)
+                progress_bar.progress(progress)
+                
+                res = future.result()
+                if res:
+                    results.append(res)
+                
+                status_text.text(f"📊 Progress: {i+1}/{len(tickers)} • Found: {len(results)} candidates")
+        
+        status.update(label=f"✅ Scan complete! Found {len(results)} candidates", state="complete")
+    
+    if not results:
+        return pd.DataFrame()
+    
+    df = pd.DataFrame(results).sort_values("Score", ascending=False).reset_index(drop=True)
+    
+    # Update session state
+    st.session_state.last_scan_df = df
+    st.session_state.last_scan_time = datetime.now()
+    st.session_state.last_scan_strategy = strategy
+    st.session_state.scan_count += 1
+    
+    return df
+
+def process_ticker(ticker, strategy, period):
+    """Process single ticker"""
+    try:
+        df = fetch_data(ticker, period)
+        result = simple_score(df, ticker)
+        return result
+    except Exception:
+        return None
+
+def display_paginated_dataframe(df, rows_per_page, key_suffix=""):
+    """Fixed pagination system"""
+    if df.empty:
+        st.info("No data to display")
+        return
+    
+    total_rows = len(df)
+    num_pages = max((total_rows - 1) // rows_per_page + 1, 1)
+    
+    # Gunakan selectbox sebagai ganti slider
+    if num_pages > 1:
+        page_options = list(range(1, num_pages + 1))
+        page = st.selectbox(f"Page {key_suffix}", page_options, key=f"page_{key_suffix}")
+    else:
+        page = 1
+    
+    start_idx = (page - 1) * rows_per_page
+    end_idx = min(start_idx + rows_per_page, total_rows)
+    
+    st.dataframe(
+        df.iloc[start_idx:end_idx][
+            ["Ticker", "Price", "Score", "Grade", "Signal", "Momentum_5D", "Volume_Ratio"]
+        ],
+        use_container_width=True,
+        height=400,
+    )
+    
+    st.caption(f"Showing {start_idx + 1}-{end_idx} of {total_rows} results")
+
+def manage_stage_filtering(df_all, stage1_limit, stage2_limit):
+    """Fixed stage filtering system"""
+    if df_all.empty:
+        return None, None
+    
+    # Stage 1: Basic filtering
+    stage1_df = df_all[df_all["Score"] >= 60].head(stage1_limit)
+    
+    # Stage 2: Elite picks dari Stage 1
+    stage2_df = stage1_df[stage1_df["Score"] >= 70].head(stage2_limit)
+    
+    # Display info
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Total Scanned", len(df_all))
+    with col2:
+        st.metric("Stage 1 Candidates", len(stage1_df))
+    with col3:
+        st.metric("Stage 2 Elite", len(stage2_df))
+    
+    return stage1_df, stage2_df
 
 def main():
-    st.title("⚡ IDX Power Screener – ENHANCED FILTERING")
-    st.caption("799 Saham Lengkap • Filter Ketat Anti Gorengan • Stage Tersinkronisasi")
+    st.title("⚡ IDX Power Screener – COMPLETE WITH BUTTONS")
+    st.caption("799 Saham Lengkap • Tombol Jelas • Hasil Akurat")
 
     display_ihsg_widget()
     tickers = load_tickers()
@@ -496,7 +453,6 @@ def main():
     with st.sidebar:
         st.markdown("## ⚙️ Settings")
         st.info(f"📊 Total stocks loaded: **{len(tickers)}**")
-        st.warning("🔒 **Enhanced Filtering ON** - Hanya saham quality yang lolos")
 
         jkt = get_jakarta_time()
         st.caption(f"🕒 Jakarta time: {jkt.strftime('%d %b %Y • %H:%M WIB')}")
@@ -504,29 +460,161 @@ def main():
         st.markdown("---")
 
         menu = st.radio("📋 Menu Utama", [
-            "🔎 Screen ALL IDX", "🔍 Single Stock", "🌙 BSJP (Beli sore jual pagi)",
-            "⚡ BPJS (Beli pagi jual sore)", "💎 Saham Quality (Blue Chips)", "🔮 Bandarmology",
+            "🔎 Screen ALL IDX", "🔍 Single Stock", "🌙 BSJP Strategy",
+            "⚡ BPJS Strategy", "💎 Value Strategy", "🔮 Bandarmology"
         ])
 
         st.markdown("---")
 
         if menu != "🔍 Single Stock":
-            period = st.selectbox("Period data", ["3mo", "6mo", "1y"], index=1)
+            period = st.selectbox("Period data", ["1mo", "3mo", "6mo"], index=1)
 
             st.markdown("### 🎯 Stage Filter")
-            stage1_limit = st.selectbox("Stage 1 – Top Kandidat", options=[50, 100, 150, 200], index=1,
-                                       help="Jumlah maksimal saham di Stage 1")
-            stage2_limit = st.selectbox("Stage 2 – Elite Picks", options=[10, 20, 30, 40, 50], index=2,
-                                       help="Jumlah maksimal saham elite dari Stage 1")
+            stage1_limit = st.selectbox("Stage 1 – Top Kandidat", options=[50, 100, 150, 200], index=1)
+            stage2_limit = st.selectbox("Stage 2 – Elite Picks", options=[10, 20, 30, 40, 50], index=2)
 
             st.markdown("### 📄 Tabel Tampilan")
             rows_per_page = st.selectbox("Rows per page", options=[20, 40, 60, 80, 100], index=1)
 
         st.markdown("---")
-        st.caption("v7.0 – Enhanced Filtering • Anti saham gorengan • Stage tersinkronisasi")
+        st.caption("v8.0 – Complete with Clear Buttons")
 
-    # Implementasi menu yang sama seperti sebelumnya...
-    # [Rest of main function implementation...]
+    # ============= 🔎 SCREEN ALL IDX =============
+    if menu == "🔎 Screen ALL IDX":
+        st.markdown("## 🔎 Screen ALL IDX – Full Universe")
+        
+        st.markdown("### 🚀 **TEKAN TOMBOL INI UNTUK JALANKAN SCREENER:**")
+        
+        # BIG RED BUTTON - VERY CLEAR!
+        col1, col2, col3 = st.columns([1,2,1])
+        with col2:
+            scan_button = st.button(
+                "🔥 JALANKAN SCAN SEMUA SAHAM! 🔥", 
+                type="primary", 
+                use_container_width=True,
+                key="main_scan_button"
+            )
+        
+        if scan_button:
+            with st.spinner(f"Scanning {len(tickers)} saham..."):
+                df_all = enhanced_scan_universe(tickers, "General", period)
+
+            if df_all.empty:
+                st.error("❌ Tidak ada saham yang lolos filter.")
+            else:
+                stage1_df, stage2_df = manage_stage_filtering(df_all, stage1_limit, stage2_limit)
+                
+                if stage1_df is not None:
+                    st.markdown("### 🥇 Stage 1 – Top Kandidat")
+                    display_paginated_dataframe(stage1_df, rows_per_page, "stage1")
+                
+                if stage2_df is not None and not stage2_df.empty:
+                    st.markdown("### 🏆 Stage 2 – Elite Picks")
+                    st.dataframe(stage2_df, use_container_width=True, height=300)
+                    
+                    # Download button
+                    csv = stage2_df.to_csv(index=False)
+                    st.download_button(
+                        "💾 Download Elite Picks (CSV)",
+                        data=csv,
+                        file_name=f"IDX_Elite_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                        mime="text/csv"
+                    )
+
+    # ============= 🔍 SINGLE STOCK =============
+    elif menu == "🔍 Single Stock":
+        st.markdown("## 🔍 Single Stock Analysis")
+        
+        col_sel1, col_sel2 = st.columns([2, 1])
+        with col_sel1:
+            selected = st.selectbox("Pilih saham", [t.replace(".JK", "") for t in tickers])
+        with col_sel2:
+            period = st.selectbox("Period data", ["1mo", "3mo", "6mo"], index=1)
+        
+        st.markdown("### 🚀 **TEKAN TOMBOL INI UNTUK ANALISA:**")
+        
+        # ANALYZE BUTTON
+        col1, col2, col3 = st.columns([1,2,1])
+        with col2:
+            analyze_button = st.button(
+                "🔍 ANALYZE SAHAM INI!", 
+                type="primary", 
+                use_container_width=True,
+                key="analyze_button"
+            )
+        
+        if analyze_button:
+            ticker_full = f"{selected}.JK"
+            with st.spinner(f"Menganalisa {selected}..."):
+                df = fetch_data(ticker_full, period)
+                result = simple_score(df, ticker_full)
+
+            if result is None:
+                st.error("❌ Gagal menganalisa saham ini.")
+            else:
+                st.markdown(f"## 💎 {result['Ticker']} – {result['Signal']} ({result['Grade']})")
+                
+                colm1, colm2, colm3, colm4 = st.columns(4)
+                colm1.metric("Price", f"Rp {result['Price']:,.0f}")
+                colm2.metric("Score", f"{result['Score']}/100")
+                colm3.metric("Grade", result["Grade"])
+                colm4.metric("Signal", result["Signal"])
+                
+                st.markdown("### 📊 Technical Details")
+                for k, v in result["Details"].items():
+                    st.write(f"**{k}**: {v}")
+
+    # ============= STRATEGY MENUS =============
+    elif menu == "🌙 BSJP Strategy":
+        st.markdown("## 🌙 BSJP Strategy")
+        st.info("Beli Sore Jual Pagi - Overnight trading")
+        
+        # BSJP BUTTON
+        if st.button("🚀 SCAN BSJP NOW!", type="primary", use_container_width=True):
+            with st.spinner("Scanning untuk BSJP..."):
+                df_all = enhanced_scan_universe(tickers, "BSJP", period)
+                if not df_all.empty:
+                    stage1_df = df_all.head(stage1_limit)
+                    display_paginated_dataframe(stage1_df, rows_per_page, "bsjp")
+
+    elif menu == "⚡ BPJS Strategy":
+        st.markdown("## ⚡ BPJS Strategy") 
+        st.info("Beli Pagi Jual Sore - Day trading")
+        
+        # BPJS BUTTON
+        if st.button("🚀 SCAN BPJS NOW!", type="primary", use_container_width=True):
+            with st.spinner("Scanning untuk BPJS..."):
+                df_all = enhanced_scan_universe(tickers, "BPJS", period)
+                if not df_all.empty:
+                    stage1_df = df_all.head(stage1_limit)
+                    display_paginated_dataframe(stage1_df, rows_per_page, "bpjs")
+
+    elif menu == "💎 Value Strategy":
+        st.markdown("## 💎 Value Strategy")
+        st.info("Saham fundamental kuat & murah")
+        
+        # VALUE BUTTON
+        if st.button("🚀 SCAN VALUE NOW!", type="primary", use_container_width=True):
+            with st.spinner("Scanning untuk Value..."):
+                df_all = enhanced_scan_universe(tickers, "Value", period)
+                if not df_all.empty:
+                    stage1_df = df_all.head(stage1_limit)
+                    display_paginated_dataframe(stage1_df, rows_per_page, "value")
+
+    elif menu == "🔮 Bandarmology":
+        st.markdown("## 🔮 Bandarmology")
+        st.info("Deteksi pergerakan uang besar")
+        
+        # BANDAR BUTTON
+        if st.button("🚀 SCAN BANDARMOLOGY NOW!", type="primary", use_container_width=True):
+            with st.spinner("Scanning untuk Bandarmology..."):
+                df_all = enhanced_scan_universe(tickers, "Bandar", period)
+                if not df_all.empty:
+                    stage1_df = df_all.head(stage1_limit)
+                    display_paginated_dataframe(stage1_df, rows_per_page, "bandar")
+
+    st.markdown("---")
+    st.caption("⚡ IDX Power Screener v8.0 • Tombol jelas di setiap menu!")
 
 if __name__ == "__main__":
     main()
