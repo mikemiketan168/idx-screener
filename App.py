@@ -29,6 +29,10 @@ if "last_scan_strategy" not in st.session_state:
 if "scan_count" not in st.session_state:
     st.session_state.scan_count = 0
 
+# ============= CALC TIME =============
+def get_jakarta_time():
+    return datetime.now(timezone(timedelta(hours=7)))
+
 # ============= COMPLETE IDX TICKERS =============
 def load_tickers():
     """Load complete IDX tickers list"""
@@ -112,7 +116,6 @@ def load_tickers():
         "WTON", "YELO", "YPAS", "YULE", "ZBRA", "ZINC", "ZONE", "RATU", "CDIA", "CUAN",
         "COIN", "JARR", "GZCO", "NCKL", "CBRE", "AADI", "FUTR", "ZPAY"
     ]
-    
     return [f"{ticker}.JK" for ticker in complete_tickers]
 
 # ============= MARKET STATUS =============
@@ -121,10 +124,10 @@ def get_market_status():
     jkt_time = get_jakarta_time()
     current_hour = jkt_time.hour
     current_minute = jkt_time.minute
-    
+
     is_morning_session = (9 <= current_hour < 12) or (current_hour == 12 and current_minute == 0)
     is_afternoon_session = (13 <= current_hour < 16) or (current_hour == 16 and current_minute == 0)
-    
+
     if is_morning_session or is_afternoon_session:
         next_close = "12:00" if current_hour < 12 else "16:00"
         return "🟢 OPEN", f"Pasar buka • Tutup {next_close} WIB"
@@ -163,7 +166,7 @@ def fetch_ihsg_data():
 def display_ihsg_widget():
     ihsg = fetch_ihsg_data()
     market_status, status_desc = get_market_status()
-    
+
     if not ihsg:
         st.info("📊 IHSG data temporarily unavailable")
         return
@@ -225,9 +228,6 @@ def display_ihsg_widget():
         unsafe_allow_html=True,
     )
 
-def get_jakarta_time():
-    return datetime.now(timezone(timedelta(hours=7)))
-
 # ============= CALCULATE TRADING LEVELS =============
 def calculate_trading_levels(df, current_price):
     """Calculate trading levels based on price action"""
@@ -240,13 +240,12 @@ def calculate_trading_levels(df, current_price):
             "tp2": 0,
             "cl": 0
         }
-    
+
     try:
-        # Calculate trend
         if len(df) >= 20:
-            sma_20 = df['Close'].tail(20).mean()
-            sma_5 = df['Close'].tail(5).mean()
-            
+            sma_20 = df["Close"].tail(20).mean()
+            sma_5 = df["Close"].tail(5).mean()
+
             if sma_5 > sma_20 and current_price > sma_20:
                 trend = "🟢 Uptrend"
             elif sma_5 < sma_20 and current_price < sma_20:
@@ -255,12 +254,10 @@ def calculate_trading_levels(df, current_price):
                 trend = "🟡 Sideways"
         else:
             trend = "🟡 Sideways"
-        
-        # Calculate support and resistance levels
-        recent_low = df['Low'].tail(10).min()
-        recent_high = df['High'].tail(10).max()
-        
-        # Calculate trading levels
+
+        recent_low = df["Low"].tail(10).min()
+        recent_high = df["High"].tail(10).max()
+
         if trend == "🟢 Uptrend":
             entry_ideal = max(current_price * 0.98, recent_low)
             entry_agresif = current_price * 0.995
@@ -273,13 +270,13 @@ def calculate_trading_levels(df, current_price):
             tp1 = current_price * 0.97
             tp2 = current_price * 0.94
             cl = current_price * 1.03
-        else:  # Sideways
+        else:
             entry_ideal = current_price * 0.99
             entry_agresif = current_price * 0.995
             tp1 = current_price * 1.02
             tp2 = current_price * 1.04
             cl = current_price * 0.98
-        
+
         return {
             "trend": trend,
             "entry_ideal": round(entry_ideal, 2),
@@ -299,7 +296,7 @@ def calculate_trading_levels(df, current_price):
         }
 
 # ============= SIMPLE SCORING SYSTEM =============
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=300)
 def fetch_data(ticker, period="3mo"):
     """Fetch stock data"""
     try:
@@ -314,38 +311,35 @@ def simple_score(df, ticker):
     """Simple scoring function with trading levels"""
     if df is None or len(df) < 20:
         return None
-    
+
     try:
-        last_close = df['Close'].iloc[-1]
-        volume = df['Volume'].iloc[-1]
-        avg_volume = df['Volume'].tail(20).mean()
-        
-        # Basic filters
+        last_close = df["Close"].iloc[-1]
+        volume = df["Volume"].iloc[-1]
+        avg_volume = df["Volume"].tail(20).mean()
+
+        # Basic filters (anti tuyul)
         if volume < 100000 or last_close < 50:
             return None
-            
-        # Simple momentum
+
         if len(df) > 5:
-            price_5d_ago = df['Close'].iloc[-6]
+            price_5d_ago = df["Close"].iloc[-6]
             momentum_5d = (last_close / price_5d_ago - 1) * 100
         else:
             momentum_5d = 0
-            
+
         if len(df) > 20:
-            price_20d_ago = df['Close'].iloc[-21]
+            price_20d_ago = df["Close"].iloc[-21]
             momentum_20d = (last_close / price_20d_ago - 1) * 100
         else:
             momentum_20d = 0
-            
+
         volume_ratio = volume / avg_volume if avg_volume > 0 else 1
-        
-        # Calculate trading levels
+
         trading_levels = calculate_trading_levels(df, last_close)
-        
-        # Simple score calculation
+
         score = 0
         details = {}
-        
+
         # Price momentum
         if momentum_5d > 5:
             score += 30
@@ -358,7 +352,7 @@ def simple_score(df, ticker):
             details["Momentum"] = f"🟠 Neutral +{momentum_5d:.1f}%"
         else:
             details["Momentum"] = f"🔴 Negative {momentum_5d:.1f}%"
-            
+
         # Volume
         if volume_ratio > 2:
             score += 25
@@ -371,7 +365,7 @@ def simple_score(df, ticker):
             details["Volume"] = f"🟠 Normal {volume_ratio:.1f}x"
         else:
             details["Volume"] = f"🔴 Low {volume_ratio:.1f}x"
-            
+
         # Trend (simple)
         if momentum_20d > 10:
             score += 25
@@ -381,7 +375,7 @@ def simple_score(df, ticker):
             details["Trend"] = f"🟡 Sideways +{momentum_20d:.1f}%"
         else:
             details["Trend"] = f"🔴 Downtrend {momentum_20d:.1f}%"
-            
+
         # Price level
         if last_close > 1000:
             score += 20
@@ -392,8 +386,7 @@ def simple_score(df, ticker):
         else:
             score += 10
             details["Price"] = f"🟠 Smallcap Rp {last_close:,.0f}"
-            
-        # Grade
+
         if score >= 80:
             grade, signal = "A+", "Strong Buy"
         elif score >= 70:
@@ -404,7 +397,7 @@ def simple_score(df, ticker):
             grade, signal = "B", "Hold"
         else:
             grade, signal = "C", "Watch"
-            
+
         return {
             "Ticker": ticker.replace(".JK", ""),
             "Price": last_close,
@@ -425,43 +418,7 @@ def simple_score(df, ticker):
     except Exception:
         return None
 
-def enhanced_scan_universe(tickers, strategy, period):
-    """Enhanced scan dengan performance tracking"""
-    start_time = time.time()
-    results = []
-    
-    with st.status(f"🔍 Scanning {len(tickers)} stocks...", expanded=True) as status:
-        with ThreadPoolExecutor(max_workers=10) as executor:
-            futures = {executor.submit(process_ticker, t, strategy, period): t for t in tickers}
-            
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-            
-            for i, future in enumerate(as_completed(futures)):
-                progress = (i + 1) / len(futures)
-                progress_bar.progress(progress)
-                
-                res = future.result()
-                if res:
-                    results.append(res)
-                
-                status_text.text(f"📊 Progress: {i+1}/{len(tickers)} • Found: {len(results)} candidates")
-        
-        status.update(label=f"✅ Scan complete! Found {len(results)} candidates", state="complete")
-    
-    if not results:
-        return pd.DataFrame()
-    
-    df = pd.DataFrame(results).sort_values("Score", ascending=False).reset_index(drop=True)
-    
-    # Update session state
-    st.session_state.last_scan_df = df
-    st.session_state.last_scan_time = datetime.now()
-    st.session_state.last_scan_strategy = strategy
-    st.session_state.scan_count += 1
-    
-    return df
-
+# ============= SCAN ENGINE =============
 def process_ticker(ticker, strategy, period):
     """Process single ticker"""
     try:
@@ -471,51 +428,95 @@ def process_ticker(ticker, strategy, period):
     except Exception:
         return None
 
+def enhanced_scan_universe(tickers, strategy, period):
+    """Enhanced scan dengan performance tracking"""
+    results = []
+
+    with st.status(f"🔍 Scanning {len(tickers)} stocks...", expanded=True) as status:
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futures = {executor.submit(process_ticker, t, strategy, period): t for t in tickers}
+
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+
+            for i, future in enumerate(as_completed(futures)):
+                progress = (i + 1) / len(futures)
+                progress_bar.progress(progress)
+
+                res = future.result()
+                if res:
+                    results.append(res)
+
+                status_text.text(
+                    f"📊 Progress: {i+1}/{len(tickers)} • Found: {len(results)} candidates"
+                )
+
+        status.update(label=f"✅ Scan complete! Found {len(results)} candidates", state="complete")
+
+    if not results:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(results).sort_values("Score", ascending=False).reset_index(drop=True)
+
+    st.session_state.last_scan_df = df
+    st.session_state.last_scan_time = datetime.now()
+    st.session_state.last_scan_strategy = strategy
+    st.session_state.scan_count += 1
+
+    return df
+
+# ============= DISPLAY HELPERS =============
 def display_paginated_dataframe(df, rows_per_page, key_suffix=""):
-    """Fixed pagination system with new columns"""
+    """Pagination table"""
     if df.empty:
         st.info("No data to display")
         return
-    
+
     total_rows = len(df)
     num_pages = max((total_rows - 1) // rows_per_page + 1, 1)
-    
-    # Gunakan selectbox sebagai ganti slider
+
     if num_pages > 1:
         page_options = list(range(1, num_pages + 1))
         page = st.selectbox(f"Page {key_suffix}", page_options, key=f"page_{key_suffix}")
     else:
         page = 1
-    
+
     start_idx = (page - 1) * rows_per_page
     end_idx = min(start_idx + rows_per_page, total_rows)
-    
-    # Display dataframe with new columns
+
     display_columns = [
-        "Ticker", "Price", "Score", "Grade", "Signal", "Trend", 
+        "Ticker", "Price", "Score", "Grade", "Signal", "Trend",
         "Entry Ideal", "Entry Agresif", "TP1", "TP2", "CL"
     ]
-    
+
     st.dataframe(
         df.iloc[start_idx:end_idx][display_columns],
         use_container_width=True,
         height=400,
     )
-    
+
     st.caption(f"Showing {start_idx + 1}-{end_idx} of {total_rows} results")
 
 def manage_stage_filtering(df_all, stage1_limit, stage2_limit):
-    """Fixed stage filtering system"""
+    """
+    Stage 1: Strong Buy / Buy, NO Downtrend
+    Stage 2: Strong Buy only (Elite), dari Stage 1
+    """
     if df_all.empty:
         return None, None
-    
-    # Stage 1: Basic filtering
-    stage1_df = df_all[df_all["Score"] >= 60].head(stage1_limit)
-    
-    # Stage 2: Elite picks dari Stage 1
-    stage2_df = stage1_df[stage1_df["Score"] >= 70].head(stage2_limit)
-    
-    # Display info
+
+    # Stage 1 candidates: buang downtrend + hanya Strong Buy / Buy
+    mask_no_downtrend = ~df_all["Trend"].astype(str).str.contains("Downtrend")
+    mask_signal_ok = df_all["Signal"].isin(["Strong Buy", "Buy"])
+    stage1_candidates = df_all[mask_no_downtrend & mask_signal_ok].copy()
+
+    # Urutkan by Score desc dan ambil sesuai limit
+    stage1_df = stage1_candidates.sort_values("Score", ascending=False).head(stage1_limit)
+
+    # Stage 2: Elite Strong Buy dari Stage 1
+    stage2_candidates = stage1_df[stage1_df["Signal"] == "Strong Buy"].copy()
+    stage2_df = stage2_candidates.sort_values("Score", ascending=False).head(stage2_limit)
+
     col1, col2, col3 = st.columns(3)
     with col1:
         st.metric("Total Scanned", len(df_all))
@@ -523,12 +524,13 @@ def manage_stage_filtering(df_all, stage1_limit, stage2_limit):
         st.metric("Stage 1 Candidates", len(stage1_df))
     with col3:
         st.metric("Stage 2 Elite", len(stage2_df))
-    
+
     return stage1_df, stage2_df
 
+# ============= MAIN APP =============
 def main():
-    st.title("⚡ IDX Power Screener – COMPLETE WITH TRADING LEVELS")
-    st.caption("799 Saham Lengkap • Level Trading • Hasil Akurat")
+    st.title("⚡ IDX Power Screener – EXTREME BUILD")
+    st.caption("799 Saham Lengkap • Stage Filter • Trading Levels")
 
     display_ihsg_widget()
     tickers = load_tickers()
@@ -542,10 +544,17 @@ def main():
 
         st.markdown("---")
 
-        menu = st.radio("📋 Menu Utama", [
-            "🔎 Screen ALL IDX", "🔍 Single Stock", "🌙 BSJP Strategy",
-            "⚡ BPJS Strategy", "💎 Value Strategy", "🔮 Bandarmology"
-        ])
+        menu = st.radio(
+            "📋 Menu Utama",
+            [
+                "🔎 Screen ALL IDX",
+                "🔍 Single Stock",
+                "🌙 BSJP (Beli Sore Jual Pagi)",
+                "⚡ BPJS (Beli Pagi Jual Sore)",
+                "💎 Value Strategy",
+                "🔮 Bandarmology",
+            ],
+        )
 
         st.markdown("---")
 
@@ -553,31 +562,42 @@ def main():
             period = st.selectbox("Period data", ["1mo", "3mo", "6mo"], index=1)
 
             st.markdown("### 🎯 Stage Filter")
-            stage1_limit = st.selectbox("Stage 1 – Top Kandidat", options=[50, 100, 150, 200], index=1)
-            stage2_limit = st.selectbox("Stage 2 – Elite Picks", options=[10, 20, 30, 40, 50], index=2)
+            stage1_limit = st.selectbox(
+                "Stage 1 – Top Kandidat (Strong Buy / Buy • NO Downtrend)",
+                options=[50, 100, 150, 200],
+                index=1,
+            )
+            stage2_limit = st.selectbox(
+                "Stage 2 – Elite Picks (Strong Buy saja)",
+                options=[10, 20, 30, 40, 50],
+                index=2,
+            )
 
             st.markdown("### 📄 Tabel Tampilan")
-            rows_per_page = st.selectbox("Rows per page", options=[20, 40, 60, 80, 100], index=1)
+            rows_per_page = st.selectbox(
+                "Rows per page", options=[20, 40, 60, 80, 100], index=1
+            )
+        else:
+            period = st.selectbox("Period data", ["1mo", "3mo", "6mo"], index=1)
+            stage1_limit = stage2_limit = rows_per_page = None  # dummy
 
         st.markdown("---")
-        st.caption("v8.1 – Complete with Trading Levels")
+        st.caption("v8.2 – EXTREME BUILD (Stage Filter Optimized)")
 
-    # ============= 🔎 SCREEN ALL IDX =============
+    # ========= MENU: SCREEN ALL =========
     if menu == "🔎 Screen ALL IDX":
         st.markdown("## 🔎 Screen ALL IDX – Full Universe")
-        
-        st.markdown("### 🚀 **TEKAN TOMBOL INI UNTUK JALANKAN SCREENER:**")
-        
-        # BIG RED BUTTON - VERY CLEAR!
-        col1, col2, col3 = st.columns([1,2,1])
+
+        st.markdown("### 🚀 TEKAN TOMBOL INI UNTUK JALANKAN SCREENER")
+        col1, col2, col3 = st.columns([1, 2, 1])
         with col2:
             scan_button = st.button(
-                "🔥 JALANKAN SCAN SEMUA SAHAM! 🔥", 
-                type="primary", 
+                "🔥 JALANKAN SCAN SEMUA SAHAM! 🔥",
+                type="primary",
                 use_container_width=True,
-                key="main_scan_button"
+                key="main_scan_button",
             )
-        
+
         if scan_button:
             with st.spinner(f"Scanning {len(tickers)} saham..."):
                 df_all = enhanced_scan_universe(tickers, "General", period)
@@ -585,47 +605,53 @@ def main():
             if df_all.empty:
                 st.error("❌ Tidak ada saham yang lolos filter.")
             else:
-                stage1_df, stage2_df = manage_stage_filtering(df_all, stage1_limit, stage2_limit)
-                
-                if stage1_df is not None:
-                    st.markdown("### 🥇 Stage 1 – Top Kandidat")
+                stage1_df, stage2_df = manage_stage_filtering(
+                    df_all, stage1_limit, stage2_limit
+                )
+
+                if stage1_df is not None and not stage1_df.empty:
+                    st.markdown("### 🥇 Stage 1 – Top Kandidat (Strong Buy / Buy • NO Downtrend)")
                     display_paginated_dataframe(stage1_df, rows_per_page, "stage1")
-                
+                else:
+                    st.warning("Stage 1 kosong. Mungkin market lagi jelek banget.")
+
                 if stage2_df is not None and not stage2_df.empty:
-                    st.markdown("### 🏆 Stage 2 – Elite Picks")
+                    st.markdown("### 🏆 Stage 2 – Elite Picks (Strong Buy)")
                     st.dataframe(stage2_df, use_container_width=True, height=300)
-                    
-                    # Download button
+
                     csv = stage2_df.to_csv(index=False)
                     st.download_button(
                         "💾 Download Elite Picks (CSV)",
                         data=csv,
                         file_name=f"IDX_Elite_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-                        mime="text/csv"
+                        mime="text/csv",
                     )
+                else:
+                    st.info("Belum ada Elite Strong Buy untuk Stage 2.")
 
-    # ============= 🔍 SINGLE STOCK =============
+    # ========= MENU: SINGLE STOCK =========
     elif menu == "🔍 Single Stock":
         st.markdown("## 🔍 Single Stock Analysis")
-        
+
         col_sel1, col_sel2 = st.columns([2, 1])
         with col_sel1:
-            selected = st.selectbox("Pilih saham", [t.replace(".JK", "") for t in tickers])
+            selected = st.selectbox(
+                "Pilih saham", [t.replace(".JK", "") for t in tickers]
+            )
         with col_sel2:
-            period = st.selectbox("Period data", ["1mo", "3mo", "6mo"], index=1)
-        
-        st.markdown("### 🚀 **TEKAN TOMBOL INI UNTUK ANALISA:**")
-        
-        # ANALYZE BUTTON
-        col1, col2, col3 = st.columns([1,2,1])
+            # period sudah di-set di sidebar
+            pass
+
+        st.markdown("### 🚀 TEKAN TOMBOL INI UNTUK ANALISA")
+        col1, col2, col3 = st.columns([1, 2, 1])
         with col2:
             analyze_button = st.button(
-                "🔍 ANALYZE SAHAM INI!", 
-                type="primary", 
+                "🔍 ANALYZE SAHAM INI!",
+                type="primary",
                 use_container_width=True,
-                key="analyze_button"
+                key="analyze_button",
             )
-        
+
         if analyze_button:
             ticker_full = f"{selected}.JK"
             with st.spinner(f"Menganalisa {selected}..."):
@@ -635,15 +661,16 @@ def main():
             if result is None:
                 st.error("❌ Gagal menganalisa saham ini.")
             else:
-                st.markdown(f"## 💎 {result['Ticker']} – {result['Signal']} ({result['Grade']})")
-                
+                st.markdown(
+                    f"## 💎 {result['Ticker']} – {result['Signal']} (Grade {result['Grade']})"
+                )
+
                 colm1, colm2, colm3, colm4 = st.columns(4)
                 colm1.metric("Price", f"Rp {result['Price']:,.0f}")
                 colm2.metric("Score", f"{result['Score']}/100")
                 colm3.metric("Grade", result["Grade"])
                 colm4.metric("Signal", result["Signal"])
-                
-                # Trading Levels
+
                 st.markdown("### 📊 Trading Levels")
                 col_t1, col_t2, col_t3, col_t4, col_t5, col_t6 = st.columns(6)
                 with col_t1:
@@ -658,62 +685,73 @@ def main():
                     st.metric("TP2", f"Rp {result['TP2']:,.0f}")
                 with col_t6:
                     st.metric("CL", f"Rp {result['CL']:,.0f}")
-                
+
                 st.markdown("### 📈 Technical Details")
                 for k, v in result["Details"].items():
                     st.write(f"**{k}**: {v}")
 
-    # ============= STRATEGY MENUS =============
-    elif menu == "🌙 BSJP Strategy":
+    # ========= MENU: BSJP =========
+    elif menu == "🌙 BSJP (Beli Sore Jual Pagi)":
         st.markdown("## 🌙 BSJP Strategy")
-        st.info("Beli Sore Jual Pagi - Overnight trading")
-        
-        # BSJP BUTTON
+        st.info("Beli Sore Jual Pagi – Overnight trading")
+
         if st.button("🚀 SCAN BSJP NOW!", type="primary", use_container_width=True):
             with st.spinner("Scanning untuk BSJP..."):
                 df_all = enhanced_scan_universe(tickers, "BSJP", period)
                 if not df_all.empty:
-                    stage1_df = df_all.head(stage1_limit)
-                    display_paginated_dataframe(stage1_df, rows_per_page, "bsjp")
+                    stage1_df, stage2_df = manage_stage_filtering(
+                        df_all, stage1_limit, stage2_limit
+                    )
+                    if stage1_df is not None and not stage1_df.empty:
+                        display_paginated_dataframe(stage1_df, rows_per_page, "bsjp")
 
-    elif menu == "⚡ BPJS Strategy":
-        st.markdown("## ⚡ BPJS Strategy") 
-        st.info("Beli Pagi Jual Sore - Day trading")
-        
-        # BPJS BUTTON
+    # ========= MENU: BPJS =========
+    elif menu == "⚡ BPJS (Beli Pagi Jual Sore)":
+        st.markdown("## ⚡ BPJS Strategy")
+        st.info("Beli Pagi Jual Sore – Day trading")
+
         if st.button("🚀 SCAN BPJS NOW!", type="primary", use_container_width=True):
             with st.spinner("Scanning untuk BPJS..."):
                 df_all = enhanced_scan_universe(tickers, "BPJS", period)
                 if not df_all.empty:
-                    stage1_df = df_all.head(stage1_limit)
-                    display_paginated_dataframe(stage1_df, rows_per_page, "bpjs")
+                    stage1_df, stage2_df = manage_stage_filtering(
+                        df_all, stage1_limit, stage2_limit
+                    )
+                    if stage1_df is not None and not stage1_df.empty:
+                        display_paginated_dataframe(stage1_df, rows_per_page, "bpjs")
 
+    # ========= MENU: VALUE =========
     elif menu == "💎 Value Strategy":
         st.markdown("## 💎 Value Strategy")
-        st.info("Saham fundamental kuat & murah")
-        
-        # VALUE BUTTON
+        st.info("Saham fundamental kuat & murah (versi teknikal screener)")
+
         if st.button("🚀 SCAN VALUE NOW!", type="primary", use_container_width=True):
             with st.spinner("Scanning untuk Value..."):
                 df_all = enhanced_scan_universe(tickers, "Value", period)
                 if not df_all.empty:
-                    stage1_df = df_all.head(stage1_limit)
-                    display_paginated_dataframe(stage1_df, rows_per_page, "value")
+                    stage1_df, stage2_df = manage_stage_filtering(
+                        df_all, stage1_limit, stage2_limit
+                    )
+                    if stage1_df is not None and not stage1_df.empty:
+                        display_paginated_dataframe(stage1_df, rows_per_page, "value")
 
+    # ========= MENU: BANDAR =========
     elif menu == "🔮 Bandarmology":
         st.markdown("## 🔮 Bandarmology")
-        st.info("Deteksi pergerakan uang besar")
-        
-        # BANDAR BUTTON
+        st.info("Deteksi pergerakan uang besar (versi skor teknikal)")
+
         if st.button("🚀 SCAN BANDARMOLOGY NOW!", type="primary", use_container_width=True):
             with st.spinner("Scanning untuk Bandarmology..."):
                 df_all = enhanced_scan_universe(tickers, "Bandar", period)
                 if not df_all.empty:
-                    stage1_df = df_all.head(stage1_limit)
-                    display_paginated_dataframe(stage1_df, rows_per_page, "bandar")
+                    stage1_df, stage2_df = manage_stage_filtering(
+                        df_all, stage1_limit, stage2_limit
+                    )
+                    if stage1_df is not None and not stage1_df.empty:
+                        display_paginated_dataframe(stage1_df, rows_per_page, "bandar")
 
     st.markdown("---")
-    st.caption("⚡ IDX Power Screener v8.1 • Dengan Level Trading Lengkap!")
+    st.caption("⚡ IDX Power Screener v8.2 – EXTREME BUILD • Stage 1 & 2 Optimized")
 
 if __name__ == "__main__":
     main()
