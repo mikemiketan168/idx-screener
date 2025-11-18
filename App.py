@@ -690,37 +690,6 @@ def export_results(df, strategy):
             file_name=f"IDX_{strategy}_{ts}.json", mime="application/json", use_container_width=True
         )
 
-# ============= CUSTOM FILTERS =============
-def display_custom_filters():
-    """Custom filters sidebar"""
-    st.sidebar.markdown("### 🎛️ Custom Filters")
-    
-    min_price = st.sidebar.number_input("Min Price (Rp)", min_value=50, value=100, step=50)
-    max_price = st.sidebar.number_input("Max Price (Rp)", min_value=100, value=5000, step=100)
-    
-    min_volume = st.sidebar.selectbox("Min Avg Volume", options=["500K", "1M", "5M", "10M", "20M"], index=1)
-    volume_map = {"500K": 500000, "1M": 1000000, "5M": 5000000, "10M": 10000000, "20M": 20000000}
-    min_volume_value = volume_map[min_volume]
-    
-    rsi_range = st.sidebar.slider("RSI Range", 0, 100, (40, 70))
-    
-    return {
-        "min_price": min_price, "max_price": max_price,
-        "min_volume": min_volume_value, "rsi_range": rsi_range
-    }
-
-def apply_custom_filters(df, filters):
-    """Apply custom filters"""
-    if df.empty: return df
-    
-    filtered_df = df.copy()
-    filtered_df = filtered_df[
-        (filtered_df["Price"] >= filters["min_price"]) & 
-        (filtered_df["Price"] <= filters["max_price"])
-    ]
-    
-    return filtered_df
-
 # ============= DISPLAY LAST SCAN INFO =============
 def display_last_scan_info():
     if st.session_state.last_scan_df is None:
@@ -743,6 +712,37 @@ def display_last_scan_info():
         """,
         unsafe_allow_html=True,
     )
+
+# ============= FIXED PAGINATION SYSTEM =============
+def display_paginated_dataframe(df, rows_per_page, key_suffix=""):
+    """Fixed pagination system untuk menghindari slider error"""
+    if df.empty:
+        st.info("No data to display")
+        return
+    
+    total_rows = len(df)
+    num_pages = max((total_rows - 1) // rows_per_page + 1, 1)
+    
+    # Gunakan selectbox sebagai ganti slider untuk menghindari error
+    if num_pages > 1:
+        page_options = list(range(1, num_pages + 1))
+        page = st.selectbox(f"Page {key_suffix}", page_options, key=f"page_{key_suffix}")
+    else:
+        page = 1
+    
+    start_idx = (page - 1) * rows_per_page
+    end_idx = min(start_idx + rows_per_page, total_rows)
+    
+    st.dataframe(
+        df.iloc[start_idx:end_idx][
+            ["Ticker", "Price", "Score", "Confidence", "Grade",
+             "Trend", "Signal", "Entry", "Entry_Aggressive", "TP1", "TP2", "TP3", "CL"]
+        ],
+        use_container_width=True,
+        height=400,
+    )
+    
+    st.caption(f"Showing {start_idx + 1}-{end_idx} of {total_rows} results")
 
 # ============= MAIN UI =============
 def main():
@@ -776,10 +776,10 @@ def main():
             stage2_limit = st.selectbox("Stage 2 – Elite Picks", options=[10, 20, 30, 40, 50], index=1)
 
             st.markdown("### 📄 Tabel Tampilan")
-            rows_per_page = st.selectbox("Rows per page (Stage 1 table)", options=[20, 40, 60, 80, 100], index=1)
+            rows_per_page = st.selectbox("Rows per page", options=[20, 40, 60, 80, 100], index=1)
 
         st.markdown("---")
-        st.caption("v6 – Extreme Build • Edukasi saja, bukan rekomendasi beli / jual.")
+        st.caption("v6.1 – Fixed Build • Edukasi saja, bukan rekomendasi beli / jual.")
 
     # ------- SCREEN ALL IDX -------
     if menu == "🔎 Screen ALL IDX":
@@ -821,20 +821,7 @@ def main():
                 if stage1_df.empty:
                     st.info("Belum ada kandidat yang memenuhi syarat Stage 1.")
                 else:
-                    total_stage1 = len(stage1_df)
-                    num_pages = max((total_stage1 - 1) // rows_per_page + 1, 1)
-                    page = st.slider("Page Stage 1", 1, num_pages, 1)
-                    start = (page - 1) * rows_per_page
-                    end = start + rows_per_page
-
-                    st.dataframe(
-                        stage1_df.iloc[start:end][
-                            ["Ticker", "Price", "Score", "Confidence", "Grade",
-                             "Trend", "Signal", "Entry", "Entry_Aggressive", "TP1", "TP2", "TP3", "CL"]
-                        ],
-                        use_container_width=True,
-                        height=420,
-                    )
+                    display_paginated_dataframe(stage1_df, rows_per_page, "stage1")
 
                 # Stage 2: Elite picks
                 st.markdown("### 🏆 Stage 2 – Elite Picks (A+/A & Strong Buy Only)")
@@ -933,13 +920,7 @@ def main():
                 ].head(stage1_limit)
 
                 st.markdown("### 🥇 BSJP – Stage 1 Kandidat")
-                st.dataframe(
-                    stage1[
-                        ["Ticker", "Price", "Score", "Grade", "Trend", "Signal",
-                         "Entry", "Entry_Aggressive", "TP1", "TP2", "TP3", "CL"]
-                    ],
-                    use_container_width=True,
-                )
+                display_paginated_dataframe(stage1, rows_per_page, "bsjp_stage1")
 
                 stage2 = stage1[
                     (stage1["Signal"] == "Strong Buy") &
@@ -977,13 +958,7 @@ def main():
                 ].head(stage1_limit)
 
                 st.markdown("### 🥇 BPJS – Stage 1 Kandidat")
-                st.dataframe(
-                    stage1[
-                        ["Ticker", "Price", "Score", "Grade", "Trend", "Signal",
-                         "Entry", "Entry_Aggressive", "TP1", "TP2", "TP3", "CL"]
-                    ],
-                    use_container_width=True,
-                )
+                display_paginated_dataframe(stage1, rows_per_page, "bpjs_stage1")
 
                 stage2 = stage1[
                     (stage1["Signal"] == "Strong Buy") &
@@ -1021,13 +996,7 @@ def main():
                 ].head(stage1_limit)
 
                 st.markdown("### 🥇 Value – Stage 1 Kandidat")
-                st.dataframe(
-                    stage1[
-                        ["Ticker", "Price", "Score", "Grade", "Trend", "Signal",
-                         "Entry", "Entry_Aggressive", "TP1", "TP2", "TP3", "CL"]
-                    ],
-                    use_container_width=True,
-                )
+                display_paginated_dataframe(stage1, rows_per_page, "value_stage1")
 
                 stage2 = stage1[
                     (stage1["Signal"].isin(["Strong Buy", "Buy"])) &
@@ -1065,13 +1034,7 @@ def main():
                 ].head(stage1_limit)
 
                 st.markdown("### 🥇 Bandarmology – Stage 1 Kandidat")
-                st.dataframe(
-                    stage1[
-                        ["Ticker", "Price", "Score", "Grade", "Trend", "Signal",
-                         "Entry", "Entry_Aggressive", "TP1", "TP2", "TP3", "CL"]
-                    ],
-                    use_container_width=True,
-                )
+                display_paginated_dataframe(stage1, rows_per_page, "bandar_stage1")
 
                 stage2 = stage1[
                     (stage1["Signal"].isin(["Strong Buy"])) &
@@ -1092,7 +1055,7 @@ def main():
                     export_results(stage2, "Bandar")
 
     st.markdown("---")
-    st.caption("⚡ IDX Power Screener – EXTREME BUILD • Fokus trader cepat 1–3 hari • Edukasi saja, bukan ajakan beli/jual.")
+    st.caption("⚡ IDX Power Screener – EXTREME BUILD v6.1 • Fokus trader cepat 1–3 hari • Edukasi saja, bukan ajakan beli/jual.")
 
 if __name__ == "__main__":
     main()
