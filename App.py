@@ -1,757 +1,562 @@
+# app.py
 #!/usr/bin/env python3
-import streamlit as st
-import pandas as pd
-import numpy as np
-import json
+import os
+import math
 import time
+import json
+import numpy as np
+import pandas as pd
 import requests
+import streamlit as st
 from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import os
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from io import BytesIO
 
-# ================== BASIC CONFIG ==================
-st.set_page_config(
-    page_title="IDX Power Screener – EXTREME BUILD",
-    page_icon="⚡",
-    layout="wide"
-)
+st.set_page_config(page_title="IDX Power Screener v5.0", page_icon="🚀", layout="wide")
 
-# ============= SESSION STATE =============
-if "last_scan_df" not in st.session_state:
-    st.session_state.last_scan_df = None
-if "last_scan_time" not in st.session_state:
-    st.session_state.last_scan_time = None
-if "last_scan_strategy" not in st.session_state:
-    st.session_state.last_scan_strategy = None
-if "scan_count" not in st.session_state:
-    st.session_state.scan_count = 0
+# -------------------- CONSTANTS & UTILS --------------------
+IDX_TICKS = [(0, 200, 1),(200, 500, 2),(500, 2000, 5),(2000, 5000, 10),(5000, float("inf"), 25)]
 
-# ============= CALC TIME =============
-def get_jakarta_time():
+def round_to_tick(price: float, mode: str = "nearest") -> int:
+    if price is None or not (price == price) or price <= 0:
+        return 0
+    tick = 1
+    for low, high, t in IDX_TICKS:
+        if low <= price < high:
+            tick = t; break
+    if mode == "floor": return int(math.floor(price / tick) * tick)
+    if mode == "ceil":  return int(math.ceil(price / tick) * tick)
+    return int(round(price / tick) * tick)
+
+def normalize_ticker(t: str) -> str:
+    t = t.strip().upper()
+    return t if t.endswith(".JK") else f"{t}.JK"
+
+def format_idr(x: float) -> str:
+    try: return f"Rp {x:,.0f}".replace(",", ".")
+    except Exception: return "-"
+
+def get_jakarta_time() -> datetime:
     return datetime.now(timezone(timedelta(hours=7)))
 
-# ============= COMPLETE IDX TICKERS =============
-def load_tickers():
-    """Load complete IDX tickers list"""
-    complete_tickers = [
-        "AALI", "ABBA", "ABDA", "ABMM", "ACES", "ACST", "ADHI", "ADMF", "ADRO", "AGAR",
-        "AGII", "AGRO", "AGRS", "AHAP", "AIMS", "AISA", "AKKU", "AKPI", "AKRA", "AKSI",
-        "ALII", "ALKA", "ALMI", "ALTO", "AMMN", "AMMS", "AMRT", "ANDI", "ANJT", "ANTM",
-        "APIC", "APII", "APLI", "APLN", "ARCI", "ARGO", "ARII", "ARKA", "ARMY", "ARTA",
-        "ARTI", "ARTO", "ASBI", "ASDM", "ASGR", "ASHA", "ASII", "ASJT", "ASLC", "ASMI",
-        "ASPI", "ASRI", "ASRM", "ASSA", "ATAP", "ATIC", "AUTO", "AVIP", "AWAN", "AYLS",
-        "BABP", "BACA", "BAJA", "BAIK", "BALI", "BAPA", "BAPI", "BATA", "BATR", "BAYU",
-        "BBCA", "BBHI", "BBKP", "BBLD", "BBMD", "BBNI", "BBRI", "BBRM", "BBSI", "BBTN",
-        "BCAP", "BCIC", "BCIP", "BEKS", "BELL", "BELT", "BESS", "BEST", "BFIN", "BGTG",
-        "BHIT", "BIKA", "BIKE", "BIMA", "BINA", "BIPI", "BIPP", "BIRD", "BISI", "BJBR",
-        "BJTM", "BKDP", "BKSL", "BLTA", "BLTZ", "BLUE", "BMAS", "BMHS", "BMRI", "BMSR",
-        "BMTR", "BNBA", "BNBR", "BNGA", "BNII", "BNLI", "BOAT", "BOGA", "BOLT", "BOSS",
-        "BPTR", "BRAM", "BREN", "BRMS", "BRNA", "BRPT", "BSDE", "BSIM", "BSSR", "BSWD",
-        "BTEK", "BTON", "BTPN", "BTPS", "BUDI", "BUKK", "BUMI", "BUVA", "BVIC", "BWPT",
-        "BYAN", "CAKK", "CAMP", "CANI", "CARS", "CASA", "CASH", "CASS", "CBDK", "CBMF",
-        "CBPE", "CBUT", "CCSI", "CEKA", "CEKO", "CENT", "CFIN", "CGAS", "CHEM", "CHME",
-        "CINT", "CITA", "CITY", "CLAY", "CLEO", "CLPI", "CMNP", "CMNT", "CMPP", "CMRY",
-        "CNKO", "CNTB", "CNTX", "COAL", "COCO", "CODE", "COWL", "CPGT", "CPIN", "CPRI",
-        "CPRO", "CSAP", "CSIS", "CSMI", "CSRA", "CTBN", "CTRA", "CTRS", "CTTH", "DADA",
-        "DAJK", "DAMA", "DANA", "DAYA", "DCII", "DECI", "DEFI", "DEWA", "DFAM", "DGIK",
-        "DIGI", "DILD", "DIVA", "DKFT", "DLTA", "DMAS", "DMMX", "DMND", "DNAR", "DNET",
-        "DOID", "DPUM", "DRMA", "DSFI", "DSNG", "DSSA", "DUCK", "DVLA", "DWGL", "DYAN",
-        "EAST", "ECII", "EDGE", "EKAD", "ELPI", "ELSA", "ELTY", "EMDE", "EMTK", "ENAK",
-        "ENRG", "ENVY", "EPAC", "EPMT", "ERAA", "ERAL", "ERIC", "ERTX", "ESIP", "ESSA",
-        "ESTA", "EURO", "EXCL", "FAPA", "FAST", "FASW", "FILM", "FIRE", "FISH", "FITT",
-        "FMII", "FOLK", "FOOD", "FORZ", "FPNI", "FREN", "FUJI", "GAMA", "GDST", "GDYR",
-        "GEMA", "GEMS", "GGRM", "GGRP", "GHON", "GIAA", "GJTL", "GLOB", "GLVA", "GMFI",
-        "GMTD", "GOLD", "GOLL", "GOOD", "GOTO", "GPRA", "GRDP", "GRIA", "GRPM", "GTBO",
-        "GTRA", "GTSI", "GUNA", "GWSA", "HADE", "HAIS", "HAKA", "HALO", "HAPB", "HAPS",
-        "HATM", "HBAT", "HDIT", "HDTX", "HEAL", "HEAR", "HELI", "HERO", "HEXA", "HILL",
-        "HKMU", "HOKI", "HOME", "HOPE", "HOTL", "HRME", "HRTA", "IATA", "IBFN", "IBOS",
-        "IBST", "ICBP", "ICON", "IDEA", "IDPR", "IGAR", "IIKP", "IKAI", "IKBI", "IKAN",
-        "IKLH", "IMAS", "IMJS", "IMPC", "IMPG", "INAF", "INAL", "INCO", "INCR", "INDF",
-        "INDR", "INDS", "INDX", "INDY", "INET", "INOV", "INPC", "INPP", "INPS", "INRU",
-        "INTA", "INTD", "INTP", "IPAC", "IPCC", "IPCM", "IPOL", "IQCO", "IPTV", "IRRA",
-        "ISAT", "ISSP", "ITIC", "ITMA", "ITMG", "JAKA", "JALI", "JAMF", "JAST", "JAWA",
-        "JAYA", "JECC", "JGLE", "JIHD", "JKON", "JKSW", "JMAS", "JMTO", "JNPL", "JOEL",
-        "JOGE", "JOJO", "JPFA", "JRPT", "JSKY", "JSMR", "JSPT", "JTPE", "KAEF", "KARW",
-        "KAYU", "KBAG", "KBLI", "KBLM", "KBLV", "KBRI", "KDSI", "KEEN", "KIAS", "KICI",
-        "KIJA", "KINO", "KIOS", "KJEN", "KLIN", "KLBF", "KMDS", "KMTR", "KOBX", "KOIN",
-        "KOKA", "KONI", "KOPI", "KOTA", "KPAL", "KPAS", "KPIG", "KRAH", "KRAS", "KREN",
-        "KUAS", "LAMB", "LAND", "LAPD", "LAUT", "LCKM", "LEAD", "LIFE", "LINK", "LION",
-        "LMAS", "LMPI", "LMSH", "LPCK", "LPGI", "LPIN", "LPKR", "LPLI", "LPPF", "LPPS",
-        "LRNA", "LUCY", "LUCK", "MAIN", "MAMI", "MANG", "MAPA", "MAPB", "MAPI", "MARK",
-        "MASA", "MAYA", "MBAP", "MBMA", "MBSS", "MBTO", "MCAS", "MCOR", "MDIA", "MDKA",
-        "MDKI", "MDLN", "MDRN", "MEDC", "MEGA", "MEJA", "MEKO", "MERC", "MERK", "META",
-        "MFIN", "MFMI", "MGNA", "MGRO", "MICE", "MIDI", "MIKA", "MINA", "MITI", "MKNT",
-        "MKPI", "MLBI", "MLIA", "MLPL", "MLPT", "MMLP", "MNCN", "MNGA", "MOLI", "MPMX",
-        "MPOW", "MPPA", "MRAT", "MREI", "MSKY", "MTDL", "MTFN", "MTLA", "MTOR", "MTRA",
-        "MTSM", "MTWI", "MYOH", "MYOR", "MYRX", "MYTX", "NAGA", "NASA", "NASI", "NATO",
-        "NELY", "NETV", "NFCX", "NICK", "NICL", "NIKL", "NIKP", "NIPS", "NIRO", "NISP",
-        "NOBU", "NRCA", "NUSA", "OASA", "OBMD", "OCAP", "OKAS", "OMRE", "OPMS", "ORIN",
-        "PACK", "PADI", "PALM", "PANI", "PANR", "PANS", "PAPA", "PARS", "PAXE", "PBID",
-        "PBRX", "PBSA", "PCAR", "PDES", "PEGE", "PGAS", "PGEO", "PGLI", "PGUN", "PICO",
-        "PJAA", "PKPK", "PLAS", "PLIN", "PNBN", "PNBS", "PNGO", "PNIN", "PNLF", "PNSE",
-        "POLA", "POLI", "POLL", "POLU", "POLY", "POML", "POND", "POOL", "PORT", "POSA",
-        "POWR", "PPGL", "PPRE", "PPRO", "PRAS", "PRDA", "PRIM", "PSAB", "PSDN", "PSGO",
-        "PSKT", "PSSI", "PTBA", "PTIS", "PTPN", "PTPP", "PTPS", "PTRO", "PTSN", "PUDP",
-        "PURA", "PURE", "PURI", "PWON", "PYFA", "PZZA", "RAJA", "RALS", "RANC", "RAND",
-        "RBMS", "RDTX", "REAL", "RELI", "RICY", "RIDE", "RIGS", "RISE", "RIMO", "RION",
-        "RLIS", "ROCK", "RODA", "ROTI", "RUIS", "RUNS", "SAFE", "SAGA", "SAMP", "SAMR",
-        "SATU", "SBAT", "SBMA", "SCBD", "SCCO", "SCMA", "SCNP", "SCPI", "SDMU", "SDPC",
-        "SDRA", "SGER", "SGRO", "SHID", "SICO", "SIDO", "SIER", "SILO", "SIMA", "SIMP",
-        "SIMZ", "SINI", "SIPD", "SKBM", "SKLT", "SKRN", "SKYB", "SLIS", "SMAR", "SMBR",
-        "SMCB", "SMDM", "SMDR", "SMGR", "SMKL", "SMKM", "SMMA", "SMMT", "SMRA", "SMRU",
-        "SMSM", "SNLK", "SOCI", "SODA", "SOFA", "SOHO", "SONA", "SOUL", "SOSS", "SPMA",
-        "SPTO", "SQMI", "SRAJ", "SRIL", "SRSN", "SRTG", "SSIA", "SSMS", "SSTM", "STAR",
-        "STTP", "SUGI", "SULI", "SUPE", "SUPX", "SURE", "SWAT", "TAFA", "TAKA", "TALF",
-        "TAMA", "TANK", "TAPG", "TARA", "TAXI", "TAYS", "TBIG", "TBLA", "TBMS", "TCID",
-        "TEBE", "TECH", "TELE", "TFAS", "TFCO", "TGKA", "TGRA", "TGUK", "TIFA", "TINS",
-        "TIRA", "TIRT", "TISI", "TKIM", "TLKM", "TMAS", "TMPO", "TNCA", "TOBA", "TOSK",
-        "TOTL", "TOUR", "TPIA", "TPMA", "TRAM", "TRIL", "TRIM", "TRIN", "TRIS", "TRJA",
-        "TRST", "TRUE", "TRUK", "TRUS", "TSPC", "TSTD", "TTMA", "TURI", "UANG", "UCID",
-        "UFOE", "UFLY", "ULTJ", "UMIC", "UNIC", "UNIQ", "UNIT", "UNTR", "UNVR", "URBN",
-        "UVCR", "VICO", "VINS", "VIVA", "VKTR", "VNTR", "VOKS", "VRNA", "WAPO", "WAPU",
-        "WEGE", "WEHA", "WIFI", "WIIM", "WIKA", "WINE", "WINS", "WIRG", "WOOD", "WSKT",
-        "WTON", "YELO", "YPAS", "YULE", "ZBRA", "ZINC", "ZONE", "RATU", "CDIA", "CUAN",
-        "COIN", "JARR", "GZCO", "NCKL", "CBRE", "AADI", "FUTR", "ZPAY"
-    ]
-    return [f"{ticker}.JK" for ticker in complete_tickers]
+# -------------------- SESSION STATE --------------------
+for k, v in [("last_scan_results", None),("last_scan_time", None),("last_scan_strategy", None),("scan_count", 0)]:
+    if k not in st.session_state: st.session_state[k] = v
 
-# ============= MARKET STATUS =============
-def get_market_status():
-    """Cek status pasar IDX (Buka/Tutup)"""
-    jkt_time = get_jakarta_time()
-    current_hour = jkt_time.hour
-    current_minute = jkt_time.minute
-
-    is_morning_session = (9 <= current_hour < 12) or (current_hour == 12 and current_minute == 0)
-    is_afternoon_session = (13 <= current_hour < 16) or (current_hour == 16 and current_minute == 0)
-
-    if is_morning_session or is_afternoon_session:
-        next_close = "12:00" if current_hour < 12 else "16:00"
-        return "🟢 OPEN", f"Pasar buka • Tutup {next_close} WIB"
-    else:
-        return "🔴 CLOSED", "Pasar tutup • Buka besok 09:00 WIB"
-
-# ============= IHSG WIDGET =============
+# -------------------- IHSG WIDGET --------------------
 @st.cache_data(ttl=180)
 def fetch_ihsg_data():
-    """Fetch IHSG data"""
     try:
         import yfinance as yf
         ihsg = yf.Ticker("^JKSE")
-        hist = ihsg.history(period="1d")
-        if hist.empty:
-            return None
-
-        current = float(hist["Close"].iloc[-1])
-        open_price = float(hist["Open"].iloc[-1])
-        high = float(hist["High"].iloc[-1])
-        low = float(hist["Low"].iloc[-1])
+        hist = ihsg.history(period="1d", interval="1d", auto_adjust=False)
+        if hist.empty: return None
+        current = float(hist["Close"].iloc[-1]); open_price = float(hist["Open"].iloc[-1])
+        high = float(hist["High"].iloc[-1]); low = float(hist["Low"].iloc[-1])
         change = current - open_price
-        change_pct = (change / open_price) * 100 if open_price != 0 else 0
-
-        return {
-            "price": current,
-            "change": change,
-            "change_pct": change_pct,
-            "high": high,
-            "low": low,
-            "status": "up" if change >= 0 else "down",
-        }
+        change_pct = (change / open_price) * 100 if open_price else 0.0
+        return {"price": current,"change": change,"change_pct": change_pct,"high": high,"low": low,"status": "up" if change >= 0 else "down"}
     except Exception:
         return None
 
 def display_ihsg_widget():
     ihsg = fetch_ihsg_data()
-    market_status, status_desc = get_market_status()
-
-    if not ihsg:
-        st.info("📊 IHSG data temporarily unavailable")
-        return
-
+    if not ihsg: st.info("📊 IHSG data temporarily unavailable"); return
     status_emoji = "🟢" if ihsg["status"] == "up" else "🔴"
-    status_text = "BULLISH" if ihsg["status"] == "up" else "BEARISH"
+    status_text  = "BULLISH" if ihsg["status"] == "up" else "BEARISH"
+    if ihsg["change_pct"] > 1.5: condition, guidance = "🔥 Strong uptrend - Good for momentum!", "✅ Excellent for SPEED/SWING trades"
+    elif ihsg["change_pct"] > 0.5: condition, guidance = "📈 Moderate uptrend - Good conditions", "✅ Good for all strategies"
+    elif ihsg["change_pct"] > -0.5: condition, guidance = "➡️ Sideways - Mixed conditions", "⚠️ Be selective, use tight stops"
+    elif ihsg["change_pct"] > -1.5: condition, guidance = "📉 Moderate downtrend - Caution", "⚠️ Focus on VALUE plays, avoid SPEED"
+    else: condition, guidance = "🔻 Strong downtrend - High risk", "❌ Consider sitting out or very selective"
+    st.markdown(f"""
+    <div style='background: linear-gradient(135deg, #1e3a8a 0%, #1e40af 100%); padding: 15px; border-radius: 10px; margin-bottom: 20px; border-left: 5px solid {"#22c55e" if ihsg['status']=="up" else "#ef4444"}'>
+      <div style='display:flex;justify-content:space-between;align-items:center;'>
+        <div><h3 style='margin:0;color:white;'>📊 MARKET OVERVIEW</h3>
+        <p style='margin:5px 0;color:#e0e7ff;font-size:0.9em;'>Jakarta Composite Index</p></div>
+        <div style='text-align:right;'><h2 style='margin:0;color:white;'>{status_emoji} {ihsg['price']:,.2f}</h2>
+        <p style='margin:5px 0;color:{"#22c55e" if ihsg['status']=="up" else "#ef4444"};font-size:1.1em;font-weight:bold;'>{ihsg['change']:+,.2f} ({ihsg['change_pct']:+.2f}%)</p></div>
+      </div>
+      <div style='margin-top:10px;padding-top:10px;border-top:1px solid rgba(255,255,255,0.2);'>
+        <p style='margin:3px 0;color:#e0e7ff;font-size:0.85em;'>📊 High: {ihsg['high']:,.2f} | Low: {ihsg['low']:,.2f} | Status: <strong>{status_text}</strong></p>
+        <p style='margin:3px 0;color:#fbbf24;font-size:0.9em;'> {condition} </p>
+        <p style='margin:3px 0;color:#a5b4fc;font-size:0.85em;'> {guidance} </p>
+        <p style='margin:5px 0 0 0;color:#94a3b8;font-size:0.75em;'>⏰ Last update: {datetime.now().strftime('%H:%M:%S')} WIB | 🔄 Auto-refresh: 3 min</p>
+      </div>
+    </div>""", unsafe_allow_html=True)
 
-    if ihsg["change_pct"] > 1.5:
-        condition = "🔥 Strong uptrend - Good for momentum!"
-        guidance = "✅ Excellent for SPEED / SWING trades"
-    elif ihsg["change_pct"] > 0.5:
-        condition = "📈 Moderate uptrend - Good conditions"
-        guidance = "✅ Good for all strategies"
-    elif ihsg["change_pct"] > -0.5:
-        condition = "➡️ Sideways - Mixed conditions"
-        guidance = "⚠️ Be selective, gunakan stop ketat"
-    elif ihsg["change_pct"] > -1.5:
-        condition = "📉 Moderate downtrend - Caution"
-        guidance = "⚠️ Fokus VALUE, kurangi SPEED"
+# -------------------- TICKERS --------------------
+@st.cache_data(ttl=3600)
+def load_tickers() -> list[str]:
+    try:
+        if os.path.exists("idx_stocks.json"):
+            with open("idx_stocks.json", "r") as f: data = json.load(f)
+            return [normalize_ticker(t) for t in data.get("tickers", []) if t]
+    except Exception: pass
+    return ["BBRI.JK","BBCA.JK","TLKM.JK","ASII.JK","ICBP.JK","INDF.JK"]
+
+# -------------------- FETCH & INDICATORS --------------------
+def _yahoo_chart_json(ticker: str, period: str) -> dict | None:
+    end = int(datetime.now().timestamp())
+    days = {"5d": 5,"1mo": 30,"3mo": 90,"6mo": 180,"1y": 365}.get(period, 180)
+    start = end - (days * 86400)
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
+    params = {"period1": start, "period2": end, "interval": "1d"}
+    headers = {"User-Agent": "Mozilla/5.0"}
+    data = None
+    for i in range(3):
+        try:
+            r = requests.get(url, params=params, headers=headers, timeout=10)
+            if r.status_code == 200: data = r.json(); break
+        except Exception: pass
+        time.sleep(0.5 * (i + 1))
+    return data
+
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_data(ticker: str, period: str = "6mo") -> pd.DataFrame | None:
+    try:
+        data = _yahoo_chart_json(ticker, period)
+        if not data: return None
+        result = data.get("chart", {}).get("result", [None])[0]
+        if not result: return None
+        q = result["indicators"]["quote"][0]
+        ts = result.get("timestamp", [])
+        if not ts or len(ts) != len(q["close"]): return None
+        df = pd.DataFrame({
+            "Open": q["open"],"High": q["high"],"Low": q["low"],"Close": q["close"],"Volume": q["volume"]
+        }, index=pd.to_datetime(ts, unit="s")).dropna()
+        if len(df) < 50: return None
+
+        df["EMA9"]  = df["Close"].ewm(span=9, adjust=False).mean()
+        df["EMA21"] = df["Close"].ewm(span=21, adjust=False).mean()
+        df["EMA50"] = df["Close"].ewm(span=50, adjust=False).mean()
+        df["EMA200"]= df["Close"].ewm(span=min(len(df),200), adjust=False).mean()
+
+        delta = df["Close"].diff()
+        gain = delta.clip(lower=0); loss = -delta.clip(upper=0)
+        avg_gain = gain.ewm(alpha=1/14, adjust=False).mean()
+        avg_loss = loss.ewm(alpha=1/14, adjust=False).mean().replace(0, np.nan)
+        rs = avg_gain / avg_loss
+        df["RSI"] = 100 - (100 / (1 + rs))
+
+        df["VOL_SMA20"] = df["Volume"].rolling(20).mean()
+        df["VOL_SMA50"] = df["Volume"].rolling(50).mean()
+        df["VOL_RATIO"] = df["Volume"] / df["VOL_SMA20"].replace(0, np.nan)
+
+        df["MOM_5D"]  = df["Close"].pct_change(5)  * 100
+        df["MOM_10D"] = df["Close"].pct_change(10) * 100
+        df["MOM_20D"] = df["Close"].pct_change(20) * 100
+
+        obv=[0]
+        for i in range(1,len(df)):
+            if df["Close"].iloc[i] > df["Close"].iloc[i-1]: obv.append(obv[-1] + (df["Volume"].iloc[i] or 0))
+            elif df["Close"].iloc[i] < df["Close"].iloc[i-1]: obv.append(obv[-1] - (df["Volume"].iloc[i] or 0))
+            else: obv.append(obv[-1])
+        df["OBV"]=obv
+        df["OBV_EMA"]=pd.Series(df["OBV"]).ewm(span=10, adjust=False).mean()
+
+        df["BB_MID"]=df["Close"].rolling(20).mean()
+        df["BB_STD"]=df["Close"].rolling(20).std()
+        df["BB_UPPER"]=df["BB_MID"]+2*df["BB_STD"]
+        df["BB_LOWER"]=df["BB_MID"]-2*df["BB_STD"]
+        df["BB_WIDTH"]=((df["BB_UPPER"]-df["BB_LOWER"])/df["BB_MID"])*100
+
+        low14=df["Low"].rolling(14).min(); high14=df["High"].rolling(14).max()
+        df["STOCH_K"]=100*(df["Close"]-low14)/(high14-low14)
+        df["STOCH_D"]=df["STOCH_K"].rolling(3).mean()
+
+        tr1=df["High"]-df["Low"]
+        tr2=(df["High"]-df["Close"].shift()).abs()
+        tr3=(df["Low"] -df["Close"].shift()).abs()
+        tr=pd.concat([tr1,tr2,tr3],axis=1).max(axis=1)
+        df["ATR"]=tr.rolling(14).mean()
+        df["ATR_PCT"]=(df["ATR"]/df["Close"])*100
+
+        ema12=df["Close"].ewm(span=12, adjust=False).mean()
+        ema26=df["Close"].ewm(span=26, adjust=False).mean()
+        df["MACD"]=ema12-ema26
+        df["MACD_SIGNAL"]=df["MACD"].ewm(span=9, adjust=False).mean()
+        df["MACD_HIST"]=df["MACD"]-df["MACD_SIGNAL"]
+
+        return df.replace([np.inf,-np.inf],np.nan).dropna().copy()
+    except Exception:
+        return None
+
+# -------------------- CHARTS --------------------
+def create_chart(df: pd.DataFrame, ticker: str, period_days: int = 60):
+    try:
+        d=df.tail(period_days).copy()
+        fig=make_subplots(rows=3,cols=1,shared_xaxes=True,vertical_spacing=0.03,row_heights=[0.6,0.2,0.2],
+                          subplot_titles=(f"{ticker} - Price & EMAs","Volume","RSI"))
+        fig.add_trace(go.Candlestick(x=d.index,open=d["Open"],high=d["High"],low=d["Low"],close=d["Close"],
+                                     name="Price",increasing_line_color="#26a69a",decreasing_line_color="#ef5350"),row=1,col=1)
+        colors={"EMA9":"#2196F3","EMA21":"#FF9800","EMA50":"#F44336","EMA200":"#9E9E9E"}
+        for ema in ["EMA9","EMA21","EMA50","EMA200"]:
+            if ema in d.columns:
+                fig.add_trace(go.Scatter(x=d.index,y=d[ema],name=ema,line=dict(color=colors[ema],width=1.5)),row=1,col=1)
+        colors_vol=["#ef5350" if c<o else "#26a69a" for c,o in zip(d["Close"],d["Open"])]
+        fig.add_trace(go.Bar(x=d.index,y=d["Volume"],name="Volume",marker_color=colors_vol,showlegend=False),row=2,col=1)
+        fig.add_trace(go.Scatter(x=d.index,y=d["RSI"],name="RSI",line=dict(color="#9C27B0",width=2)),row=3,col=1)
+        fig.add_hline(y=70,line_dash="dash",line_color="red",opacity=0.5,row=3,col=1)
+        fig.add_hline(y=30,line_dash="dash",line_color="green",opacity=0.5,row=3,col=1)
+        fig.add_hline(y=50,line_dash="dot",line_color="gray",opacity=0.3,row=3,col=1)
+        fig.update_layout(height=700,showlegend=True,xaxis_rangeslider_visible=False,hovermode="x unified",template="plotly_dark",
+                          legend=dict(orientation="h",yanchor="bottom",y=1.02,xanchor="right",x=1))
+        fig.update_xaxes(showgrid=True,gridwidth=1,gridcolor="#333"); fig.update_yaxes(showgrid=True,gridwidth=1,gridcolor="#333")
+        return fig
+    except Exception:
+        return None
+
+# -------------------- FILTERS & SCORING HELPERS --------------------
+def apply_liquidity_filter(df: pd.DataFrame):
+    try:
+        r=df.iloc[-1]; price=float(r["Close"]); vol_avg=float(df["Volume"].tail(20).mean())
+        if price < 50: return False,"Price too low"
+        if vol_avg < 500_000: return False,"Volume too low"
+        if price*vol_avg < 100_000_000: return False,"Turnover too low"
+        return True,"Passed"
+    except Exception: return False,"Error"
+
+def ema_alignment_score(r: pd.Series):
+    pts=int(r["EMA9"]>r["EMA21"])+int(r["EMA21"]>r["EMA50"])+int(r["EMA50"]>r["EMA200"])+int(r["Close"]>r["EMA9"])
+    label={4:"🟢 Perfect",3:"🟡 Strong",2:"🟠 Moderate",1:"🔴 Weak",0:"🔴 Weak"}[pts]; return pts,label
+
+def grade_from_score(score: int):
+    if score>=85: return "A+",85
+    if score>=75: return "A",75
+    if score>=65: return "B+",65
+    if score>=55: return "B",55
+    if score>=45: return "C",45
+    return "D",max(score,0)
+
+# -------------------- STRATEGY SCORING --------------------
+def score_general(df: pd.DataFrame):
+    try:
+        ok,reason=apply_liquidity_filter(df)
+        if not ok: return 0,{"Rejected":reason},0,"F"
+        r=df.iloc[-1]
+        if r["Close"]<r["EMA50"]: return 0,{"Rejected":"Below EMA50"},0,"F"
+        if r["Close"]<r["EMA21"]<r["EMA50"]<r["EMA200"]: return 0,{"Rejected":"Strong downtrend"},0,"F"
+        score,details=0,{}
+        mom20=float(r["MOM_20D"]); volr=float(r["VOL_RATIO"]) if not np.isnan(r["VOL_RATIO"]) else 0.0
+        if mom20<-8: return 0,{"Rejected":f"Strong negative momentum ({mom20:.1f}%)"},0,"F"
+        penalty=1.0
+        if -8<=mom20<-5: penalty=0.6; details["⚠️ Warning"]=f"Weak momentum {mom20:.1f}%"
+        elif -5<=mom20<0: penalty=0.8; details["⚠️ Warning"]=f"Slight negative momentum {mom20:.1f}%"
+        pts,label=ema_alignment_score(r); score+={4:40,3:25,2:10}.get(pts,0); details["Trend"]=label
+        rsi=float(r["RSI"]) if not np.isnan(r["RSI"]) else 50.0
+        if 50<=rsi<=65: score+=25; details["RSI"]=f"🟢 {rsi:.0f}"
+        elif 45<=rsi<50: score+=20; details["RSI"]=f"🟡 {rsi:.0f}"
+        elif 40<=rsi<45: score+=10; details["RSI"]=f"🟠 {rsi:.0f}"
+        elif rsi>70: details["RSI"]=f"🔴 Overbought {rsi:.0f}"
+        elif rsi<35: details["RSI"]=f"🔴 Oversold {rsi:.0f}"
+        else: score+=5; details["RSI"]=f"⚪ {rsi:.0f}"
+        if volr>2.0: score+=20; details["Volume"]=f"🟢 {volr:.1f}x"
+        elif volr>1.5: score+=15; details["Volume"]=f"🟡 {volr:.1f}x"
+        elif volr>1.0: score+=5;  details["Volume"]=f"🟠 {volr:.1f}x"
+        else: details["Volume"]=f"🔴 {volr:.1f}x"
+        m5,m10=float(r["MOM_5D"]),float(r["MOM_10D"])
+        if m5>3 and m10>5: score+=15; details["Momentum"]=f"🟢 ST +{m5:.1f}%"
+        elif m5>1 and m10>2: score+=10; details["Momentum"]=f"🟡 ST +{m5:.1f}%"
+        elif m5>0: score+=5; details["Momentum"]=f"🟠 ST +{m5:.1f}%"
+        elif mom20>5: score+=8; details["Momentum"]=f"🟡 20D +{mom20:.1f}%"
+        score=int(score*penalty); grade,conf=grade_from_score(score)
+        return score,details,conf,grade
+    except Exception as e: return 0,{"Error":str(e)},0,"F"
+
+def score_bpjs(df: pd.DataFrame):
+    try:
+        ok,reason=apply_liquidity_filter(df)
+        if not ok: return 0,{"Rejected":reason},0,"F"
+        r=df.iloc[-1]
+        if r["Close"]<r["EMA21"]: return 0,{"Rejected":"Below EMA21"},0,"F"
+        score,details=0,{}
+        pts,label=ema_alignment_score(r); score+={4:35,3:25,2:10}.get(pts,0); details["Trend"]=label
+        volr=float(r["VOL_RATIO"]) if not np.isnan(r["VOL_RATIO"]) else 0.0
+        if volr<1.2: return 0,{"Rejected":f"Low intraday liquidity ({volr:.1f}x)"},0,"F"
+        if volr>3.0: score+=35; details["Volume"]=f"🟢 {volr:.1f}x"
+        elif volr>2.0: score+=25; details["Volume"]=f"🟡 {volr:.1f}x"
+        else: score+=10; details["Volume"]=f"🟠 {volr:.1f}x"
+        atr=float(r["ATR_PCT"]) if not np.isnan(r["ATR_PCT"]) else 0.0
+        if 2<=atr<=6: score+=20; details["ATR"]=f"🟢 {atr:.1f}%"
+        elif atr<1.5: details["ATR"]=f"🔴 Too tight {atr:.1f}%"
+        else: score+=10; details["ATR"]=f"🟡 {atr:.1f}%"
+        rsi=float(r["RSI"]) if not np.isnan(r["RSI"]) else 50
+        if 48<=rsi<=70: score+=15; details["RSI"]=f"🟢 {rsi:.0f}"
+        elif rsi>75: details["RSI"]=f"🔴 Overbought {rsi:.0f}"
+        else: score+=5; details["RSI"]=f"⚪ {rsi:.0f}"
+        grade,conf=grade_from_score(score); return score,details,conf,grade
+    except Exception as e: return 0,{"Error":str(e)},0,"F"
+
+def score_bsjp(df: pd.DataFrame):
+    try:
+        ok,reason=apply_liquidity_filter(df)
+        if not ok: return 0,{"Rejected":reason},0,"F"
+        r=df.iloc[-1]
+        if r["Close"]<r["EMA50"]: return 0,{"Rejected":"Below EMA50"},0,"F"
+        score,details=0,{}
+        pts,label=ema_alignment_score(r); score+={4:40,3:30,2:15}.get(pts,0); details["Trend"]=label
+        if float(r["MACD_HIST"])>0: score+=15; details["MACD"]="🟢 Histogram > 0"
+        else: details["MACD"]="🟠 Weak"
+        volr=float(r["VOL_RATIO"]) if not np.isnan(r["VOL_RATIO"]) else 1.0
+        if volr>1.5: score+=15; details["Volume"]=f"🟡 {volr:.1f}x"
+        elif volr>1.0: score+=8; details["Volume"]=f"⚪ {volr:.1f}x"
+        rsi=float(r["RSI"]) if not np.isnan(r["RSI"]) else 50
+        if 50<=rsi<=68: score+=15; details["RSI"]=f"🟢 {rsi:.0f}"
+        elif rsi>72: details["RSI"]=f"🔴 Overbought {rsi:.0f}"
+        grade,conf=grade_from_score(score); return score,details,conf,grade
+    except Exception as e: return 0,{"Error":str(e)},0,"F"
+
+def score_bandar(df: pd.DataFrame):
+    try:
+        ok,reason=apply_liquidity_filter(df)
+        if not ok: return 0,{"Rejected":reason},0,"F"
+        r=df.iloc[-1]; score,details=0,{}
+        if r["OBV"]>r["OBV_EMA"]: score+=30; details["OBV"]="🟢 Above OBV-EMA"
+        else: details["OBV"]="🔴 Below OBV-EMA"
+        width=float(r["BB_WIDTH"]) if not np.isnan(r["BB_WIDTH"]) else 0.0
+        recent=df["BB_WIDTH"].tail(60).dropna()
+        p25=float(np.percentile(recent,25)) if len(recent) else 0.0
+        if width<p25: score+=15; details["BB Squeeze"]=f"🟢 {width:.2f}%"
+        if r["Close"]>r["BB_UPPER"]: score+=20; details["BB Breakout"]="🟢 Close > Upper"
+        pts,label=ema_alignment_score(r); score+={4:25,3:15,2:5}.get(pts,0); details["Trend"]=label
+        volr=float(r["VOL_RATIO"]) if not np.isnan(r["VOL_RATIO"]) else 1.0
+        if volr>2.0: score+=20; details["Volume"]=f"🟢 {volr:.1f}x"
+        elif volr>1.2: score+=10; details["Volume"]=f"🟡 {volr:.1f}x"
+        grade,conf=grade_from_score(score); return score,details,conf,grade
+    except Exception as e: return 0,{"Error":str(e)},0,"F"
+
+def score_swing(df: pd.DataFrame):
+    try:
+        ok,reason=apply_liquidity_filter(df)
+        if not ok: return 0,{"Rejected":reason},0,"F"
+        r=df.iloc[-1]
+        if r["Close"]<r["EMA50"]: return 0,{"Rejected":"Below EMA50"},0,"F"
+        score,details=0,{}
+        pts,label=ema_alignment_score(r); score+={4:45,3:30,2:15}.get(pts,0); details["Trend"]=label
+        dist=abs((r["Close"]-r["EMA21"])/r["Close"])*100
+        if dist<=3: score+=15; details["Pullback"]=f"🟢 EMA21 {dist:.1f}%"
+        elif dist<=5: score+=8; details["Pullback"]=f"🟡 {dist:.1f}%"
+        rsi=float(r["RSI"]) if not np.isnan(r["RSI"]) else 50
+        if 50<=rsi<=65: score+=20; details["RSI"]=f"🟢 {rsi:.0f}"
+        elif 45<=rsi<50: score+=10; details["RSI"]=f"🟡 {rsi:.0f}"
+        elif rsi>70: details["RSI"]=f"🔴 Overbought {rsi:.0f}"
+        volr=float(r["VOL_RATIO"]) if not np.isnan(r["VOL_RATIO"]) else 1.0
+        if volr>1.5: score+=15; details["Volume"]=f"🟡 {volr:.1f}x"
+        grade,conf=grade_from_score(score); return score,details,conf,grade
+    except Exception as e: return 0,{"Error":str(e)},0,"F"
+
+def score_value(df: pd.DataFrame):
+    try:
+        ok,reason=apply_liquidity_filter(df)
+        if not ok: return 0,{"Rejected":reason},0,"F"
+        r=df.iloc[-1]; score,details=0,{}
+        if r["Close"]>=r["EMA200"]: score+=25; details["Trend"]="🟢 >= EMA200"
+        else: details["Trend"]="🟠 < EMA200 (mean reversion)"
+        rsi=float(r["RSI"]) if not np.isnan(r["RSI"]) else 50
+        if 35<=rsi<=50: score+=25; details["RSI"]=f"🟢 {rsi:.0f}"
+        elif rsi<30: details["RSI"]=f"🔴 Too weak {rsi:.0f}"
+        else: score+=10; details["RSI"]=f"🟡 {rsi:.0f}"
+        if r["Close"]<=r["BB_LOWER"]: score+=20; details["BB"]="🟢 Lower band touch"
+        elif r["Close"]<=r["BB_MID"]: score+=10; details["BB"]="🟡 Below mid"
+        volr=float(r["VOL_RATIO"]) if not np.isnan(r["VOL_RATIO"]) else 1.0
+        if 0.9<=volr<=1.6: score+=15; details["Volume"]=f"🟢 {volr:.1f}x"
+        elif volr>2.5: details["Volume"]=f"🔴 Blow-off? {volr:.1f}x"
+        else: score+=5; details["Volume"]=f"⚪ {volr:.1f}x"
+        grade,conf=grade_from_score(score); return score,details,conf,grade
+    except Exception as e: return 0,{"Error":str(e)},0,"F"
+
+# -------------------- TREND, SIGNAL, TRADE PLAN --------------------
+def detect_trend(r: pd.Series) -> str:
+    price,ema9,ema21,ema50,ema200=map(float,[r["Close"],r["EMA9"],r["EMA21"],r["EMA50"],r["EMA200"]])
+    if price>ema9>ema21>ema50>ema200: return "Strong Uptrend"
+    if price>ema50 and ema9>ema21>ema50: return "Uptrend"
+    if abs(price-ema50)/price<0.03: return "Sideways"
+    return "Downtrend"
+
+def classify_signal(r: pd.Series, score: int, grade: str, trend: str) -> str:
+    rsi=float(r["RSI"]) if r.get("RSI")==r.get("RSI") else 50.0
+    volr=float(r["VOL_RATIO"]) if r.get("VOL_RATIO")==r.get("VOL_RATIO") else 1.0
+    m5=float(r["MOM_5D"]) if r.get("MOM_5D")==r.get("MOM_5D") else 0.0
+    m20=float(r["MOM_20D"]) if r.get("MOM_20D")==r.get("MOM_20D") else 0.0
+    if (trend in ["Strong Uptrend","Uptrend"] and grade in ["A+","A"] and volr>1.5 and 45<=rsi<=70 and m5>0 and m20>0): return "Strong Buy"
+    if (trend in ["Strong Uptrend","Uptrend"] and grade in ["A+","A","B+"] and volr>1.0 and 40<=rsi<=75): return "Buy"
+    if trend in ["Strong Uptrend","Uptrend"] and grade in ["A+","A","B+","B"]: return "Hold"
+    if trend=="Sideways" and grade in ["B+","B","C"]: return "Hold"
+    return "Sell"
+
+def compute_trade_plan(df: pd.DataFrame, strategy: str, trend: str) -> dict:
+    r=df.iloc[-1]; price=float(r["Close"]); ema21=float(r["EMA21"])
+    if strategy=="Swing":
+        entry=round_to_tick(price*0.99); tp1=round_to_tick(entry*1.06); tp2=round_to_tick(entry*1.10); tp3=round_to_tick(entry*1.15); sl=round_to_tick(entry*0.95)
+    elif strategy=="Value":
+        entry=round_to_tick(price*0.98); tp1=round_to_tick(entry*1.15); tp2=round_to_tick(entry*1.25); tp3=round_to_tick(entry*1.35); sl=round_to_tick(entry*0.93)
     else:
-        condition = "🔻 Strong downtrend - High risk"
-        guidance = "❌ Lebih baik tunggu atau super selektif"
-
-    st.markdown(
-        f"""
-        <div style='background: linear-gradient(135deg, #0f172a 0%, #1d4ed8 100%);
-                    padding: 16px; border-radius: 12px; margin-bottom: 18px;
-                    border-left: 5px solid {"#22c55e" if ihsg['status']=="up" else "#ef4444"}'>
-          <div style='display:flex;justify-content:space-between;align-items:center;'>
-            <div>
-              <h3 style='margin:0;color:white;'>📊 MARKET OVERVIEW – IHSG</h3>
-              <p style='margin:4px 0;color:#e0e7ff;font-size:0.9em;'>
-                Jakarta Composite Index • {market_status}
-              </p>
-            </div>
-            <div style='text-align:right;'>
-              <h2 style='margin:0;color:white;'>
-                {status_emoji} {ihsg['price']:,.2f}
-              </h2>
-              <p style='margin:4px 0;color:{"#22c55e" if ihsg['status']=="up" else "#ef4444"};
-                        font-size:1.05em;font-weight:bold;'>
-                {ihsg['change']:+,.2f} ({ihsg['change_pct']:+.2f}%)
-              </p>
-            </div>
-          </div>
-          <div style='margin-top:10px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.2);'>
-            <p style='margin:3px 0;color:#e0e7ff;font-size:0.85em;'>
-              📊 High: {ihsg['high']:,.2f} | Low: {ihsg['low']:,.2f}
-              | Status: <strong>{status_text}</strong>
-            </p>
-            <p style='margin:3px 0;color:#fbbf24;font-size:0.9em;'> {condition} </p>
-            <p style='margin:3px 0;color:#a5b4fc;font-size:0.85em;'> {guidance} </p>
-            <p style='margin:5px 0 0 0;color:#94a3b8;font-size:0.75em;'>
-              ⏰ Last update: {datetime.now().strftime('%H:%M:%S')} WIB | {status_desc}
-            </p>
-          </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-# ============= CALCULATE TRADING LEVELS =============
-def calculate_trading_levels(df, current_price):
-    """Calculate trading levels based on price action"""
-    if df is None or len(df) < 20:
-        return {
-            "trend": "Unknown",
-            "entry_ideal": 0,
-            "entry_agresif": 0,
-            "tp1": 0,
-            "tp2": 0,
-            "cl": 0
-        }
-
-    try:
-        if len(df) >= 20:
-            sma_20 = df["Close"].tail(20).mean()
-            sma_5 = df["Close"].tail(5).mean()
-
-            if sma_5 > sma_20 and current_price > sma_20:
-                trend = "🟢 Uptrend"
-            elif sma_5 < sma_20 and current_price < sma_20:
-                trend = "🔴 Downtrend"
-            else:
-                trend = "🟡 Sideways"
-        else:
-            trend = "🟡 Sideways"
-
-        recent_low = df["Low"].tail(10).min()
-        recent_high = df["High"].tail(10).max()
-
-        if trend == "🟢 Uptrend":
-            entry_ideal = max(current_price * 0.98, recent_low)
-            entry_agresif = current_price * 0.995
-            tp1 = current_price * 1.03
-            tp2 = current_price * 1.06
-            cl = current_price * 0.97
-        elif trend == "🔴 Downtrend":
-            entry_ideal = min(current_price * 1.02, recent_high)
-            entry_agresif = current_price * 1.005
-            tp1 = current_price * 0.97
-            tp2 = current_price * 0.94
-            cl = current_price * 1.03
-        else:
-            entry_ideal = current_price * 0.99
-            entry_agresif = current_price * 0.995
-            tp1 = current_price * 1.02
-            tp2 = current_price * 1.04
-            cl = current_price * 0.98
-
-        return {
-            "trend": trend,
-            "entry_ideal": round(entry_ideal, 2),
-            "entry_agresif": round(entry_agresif, 2),
-            "tp1": round(tp1, 2),
-            "tp2": round(tp2, 2),
-            "cl": round(cl, 2)
-        }
-    except Exception:
-        return {
-            "trend": "Unknown",
-            "entry_ideal": 0,
-            "entry_agresif": 0,
-            "tp1": 0,
-            "tp2": 0,
-            "cl": 0
-        }
-
-# ============= SIMPLE SCORING SYSTEM =============
-@st.cache_data(ttl=300)
-def fetch_data(ticker, period="3mo"):
-    """Fetch stock data"""
-    try:
-        import yfinance as yf
-        stock = yf.Ticker(ticker)
-        hist = stock.history(period=period)
-        return hist
-    except Exception:
-        return None
-
-def simple_score(df, ticker):
-    """Simple scoring function with trading levels"""
-    if df is None or len(df) < 20:
-        return None
-
-    try:
-        last_close = df["Close"].iloc[-1]
-        volume = df["Volume"].iloc[-1]
-        avg_volume = df["Volume"].tail(20).mean()
-
-        # Basic filters (anti tuyul)
-        if volume < 100000 or last_close < 50:
-            return None
-
-        if len(df) > 5:
-            price_5d_ago = df["Close"].iloc[-6]
-            momentum_5d = (last_close / price_5d_ago - 1) * 100
-        else:
-            momentum_5d = 0
-
-        if len(df) > 20:
-            price_20d_ago = df["Close"].iloc[-21]
-            momentum_20d = (last_close / price_20d_ago - 1) * 100
-        else:
-            momentum_20d = 0
-
-        volume_ratio = volume / avg_volume if avg_volume > 0 else 1
-
-        trading_levels = calculate_trading_levels(df, last_close)
-
-        score = 0
-        details = {}
-
-        # Price momentum
-        if momentum_5d > 5:
-            score += 30
-            details["Momentum"] = f"🟢 Strong +{momentum_5d:.1f}%"
-        elif momentum_5d > 2:
-            score += 20
-            details["Momentum"] = f"🟡 Positive +{momentum_5d:.1f}%"
-        elif momentum_5d > 0:
-            score += 10
-            details["Momentum"] = f"🟠 Neutral +{momentum_5d:.1f}%"
-        else:
-            details["Momentum"] = f"🔴 Negative {momentum_5d:.1f}%"
-
-        # Volume
-        if volume_ratio > 2:
-            score += 25
-            details["Volume"] = f"🟢 High {volume_ratio:.1f}x"
-        elif volume_ratio > 1.2:
-            score += 20
-            details["Volume"] = f"🟡 Good {volume_ratio:.1f}x"
-        elif volume_ratio > 0.8:
-            score += 15
-            details["Volume"] = f"🟠 Normal {volume_ratio:.1f}x"
-        else:
-            details["Volume"] = f"🔴 Low {volume_ratio:.1f}x"
-
-        # Trend (simple)
-        if momentum_20d > 10:
-            score += 25
-            details["Trend"] = f"🟢 Uptrend +{momentum_20d:.1f}%"
-        elif momentum_20d > 0:
-            score += 15
-            details["Trend"] = f"🟡 Sideways +{momentum_20d:.1f}%"
-        else:
-            details["Trend"] = f"🔴 Downtrend {momentum_20d:.1f}%"
-
-        # Price level
-        if last_close > 1000:
-            score += 20
-            details["Price"] = f"🟢 Bluechip Rp {last_close:,.0f}"
-        elif last_close > 500:
-            score += 15
-            details["Price"] = f"🟡 Midcap Rp {last_close:,.0f}"
-        else:
-            score += 10
-            details["Price"] = f"🟠 Smallcap Rp {last_close:,.0f}"
-
-        if score >= 80:
-            grade, signal = "A+", "Strong Buy"
-        elif score >= 70:
-            grade, signal = "A", "Buy"
-        elif score >= 60:
-            grade, signal = "B+", "Hold"
-        elif score >= 50:
-            grade, signal = "B", "Hold"
-        else:
-            grade, signal = "C", "Watch"
-
-        return {
-            "Ticker": ticker.replace(".JK", ""),
-            "Price": last_close,
-            "Score": score,
-            "Grade": grade,
-            "Signal": signal,
-            "Trend": trading_levels["trend"],
-            "Entry Ideal": trading_levels["entry_ideal"],
-            "Entry Agresif": trading_levels["entry_agresif"],
-            "TP1": trading_levels["tp1"],
-            "TP2": trading_levels["tp2"],
-            "CL": trading_levels["cl"],
-            "Momentum_5D": momentum_5d,
-            "Momentum_20D": momentum_20d,
-            "Volume_Ratio": volume_ratio,
-            "Details": details
-        }
-    except Exception:
-        return None
-
-# ============= SCAN ENGINE =============
-def process_ticker(ticker, strategy, period):
-    """Process single ticker"""
-    try:
-        df = fetch_data(ticker, period)
-        result = simple_score(df, ticker)
-        return result
-    except Exception:
-        return None
-
-def enhanced_scan_universe(tickers, strategy, period):
-    """Enhanced scan dengan performance tracking"""
-    results = []
-
-    with st.status(f"🔍 Scanning {len(tickers)} stocks...", expanded=True) as status:
-        with ThreadPoolExecutor(max_workers=10) as executor:
-            futures = {executor.submit(process_ticker, t, strategy, period): t for t in tickers}
-
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-
-            for i, future in enumerate(as_completed(futures)):
-                progress = (i + 1) / len(futures)
-                progress_bar.progress(progress)
-
-                res = future.result()
-                if res:
-                    results.append(res)
-
-                status_text.text(
-                    f"📊 Progress: {i+1}/{len(tickers)} • Found: {len(results)} candidates"
-                )
-
-        status.update(label=f"✅ Scan complete! Found {len(results)} candidates", state="complete")
-
-    if not results:
-        return pd.DataFrame()
-
-    df = pd.DataFrame(results).sort_values("Score", ascending=False).reset_index(drop=True)
-
-    st.session_state.last_scan_df = df
-    st.session_state.last_scan_time = datetime.now()
-    st.session_state.last_scan_strategy = strategy
-    st.session_state.scan_count += 1
-
-    return df
-
-# ============= DISPLAY HELPERS =============
-def display_paginated_dataframe(df, rows_per_page, key_suffix=""):
-    """Pagination table"""
-    if df.empty:
-        st.info("No data to display")
-        return
-
-    total_rows = len(df)
-    num_pages = max((total_rows - 1) // rows_per_page + 1, 1)
-
-    if num_pages > 1:
-        page_options = list(range(1, num_pages + 1))
-        page = st.selectbox(f"Page {key_suffix}", page_options, key=f"page_{key_suffix}")
-    else:
-        page = 1
-
-    start_idx = (page - 1) * rows_per_page
-    end_idx = min(start_idx + rows_per_page, total_rows)
-
-    display_columns = [
-        "Ticker", "Price", "Score", "Grade", "Signal", "Trend",
-        "Entry Ideal", "Entry Agresif", "TP1", "TP2", "CL"
-    ]
-
-    st.dataframe(
-        df.iloc[start_idx:end_idx][display_columns],
-        use_container_width=True,
-        height=400,
-    )
-
-    st.caption(f"Showing {start_idx + 1}-{end_idx} of {total_rows} results")
-
-def manage_stage_filtering(df_all, stage1_limit, stage2_limit):
-    """
-    Stage 1: Strong Buy / Buy, NO Downtrend
-    Stage 2: Strong Buy only (Elite), dari Stage 1
-    """
-    if df_all.empty:
-        return None, None
-
-    # Stage 1 candidates: buang downtrend + hanya Strong Buy / Buy
-    mask_no_downtrend = ~df_all["Trend"].astype(str).str.contains("Downtrend")
-    mask_signal_ok = df_all["Signal"].isin(["Strong Buy", "Buy"])
-    stage1_candidates = df_all[mask_no_downtrend & mask_signal_ok].copy()
-
-    # Urutkan by Score desc dan ambil sesuai limit
-    stage1_df = stage1_candidates.sort_values("Score", ascending=False).head(stage1_limit)
-
-    # Stage 2: Elite Strong Buy dari Stage 1
-    stage2_candidates = stage1_df[stage1_df["Signal"] == "Strong Buy"].copy()
-    stage2_df = stage2_candidates.sort_values("Score", ascending=False).head(stage2_limit)
-
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("Total Scanned", len(df_all))
-    with col2:
-        st.metric("Stage 1 Candidates", len(stage1_df))
-    with col3:
-        st.metric("Stage 2 Elite", len(stage2_df))
-
-    return stage1_df, stage2_df
-
-# ============= MAIN APP =============
-def main():
-    st.title("⚡ IDX Power Screener – EXTREME BUILD")
-    st.caption("799 Saham Lengkap • Stage Filter • Trading Levels")
-
-    display_ihsg_widget()
-    tickers = load_tickers()
-
-    with st.sidebar:
-        st.markdown("## ⚙️ Settings")
-        st.info(f"📊 Total stocks loaded: **{len(tickers)}**")
-
-        jkt = get_jakarta_time()
-        st.caption(f"🕒 Jakarta time: {jkt.strftime('%d %b %Y • %H:%M WIB')}")
-
-        st.markdown("---")
-
-        menu = st.radio(
-            "📋 Menu Utama",
-            [
-                "🔎 Screen ALL IDX",
-                "🔍 Single Stock",
-                "🌙 BSJP (Beli Sore Jual Pagi)",
-                "⚡ BPJS (Beli Pagi Jual Sore)",
-                "💎 Value Strategy",
-                "🔮 Bandarmology",
-            ],
-        )
-
-        st.markdown("---")
-
-        if menu != "🔍 Single Stock":
-            period = st.selectbox("Period data", ["1mo", "3mo", "6mo"], index=1)
-
-            st.markdown("### 🎯 Stage Filter")
-            stage1_limit = st.selectbox(
-                "Stage 1 – Top Kandidat (Strong Buy / Buy • NO Downtrend)",
-                options=[50, 100, 150, 200],
-                index=1,
-            )
-            stage2_limit = st.selectbox(
-                "Stage 2 – Elite Picks (Strong Buy saja)",
-                options=[10, 20, 30, 40, 50],
-                index=2,
-            )
-
-            st.markdown("### 📄 Tabel Tampilan")
-            rows_per_page = st.selectbox(
-                "Rows per page", options=[20, 40, 60, 80, 100], index=1
-            )
-        else:
-            period = st.selectbox("Period data", ["1mo", "3mo", "6mo"], index=1)
-            stage1_limit = stage2_limit = rows_per_page = None  # dummy
-
-        st.markdown("---")
-        st.caption("v8.2 – EXTREME BUILD (Stage Filter Optimized)")
-
-    # ========= MENU: SCREEN ALL =========
-    if menu == "🔎 Screen ALL IDX":
-        st.markdown("## 🔎 Screen ALL IDX – Full Universe")
-
-        st.markdown("### 🚀 TEKAN TOMBOL INI UNTUK JALANKAN SCREENER")
-        col1, col2, col3 = st.columns([1, 2, 1])
-        with col2:
-            scan_button = st.button(
-                "🔥 JALANKAN SCAN SEMUA SAHAM! 🔥",
-                type="primary",
-                use_container_width=True,
-                key="main_scan_button",
-            )
-
-        if scan_button:
-            with st.spinner(f"Scanning {len(tickers)} saham..."):
-                df_all = enhanced_scan_universe(tickers, "General", period)
-
-            if df_all.empty:
-                st.error("❌ Tidak ada saham yang lolos filter.")
-            else:
-                stage1_df, stage2_df = manage_stage_filtering(
-                    df_all, stage1_limit, stage2_limit
-                )
-
-                if stage1_df is not None and not stage1_df.empty:
-                    st.markdown("### 🥇 Stage 1 – Top Kandidat (Strong Buy / Buy • NO Downtrend)")
-                    display_paginated_dataframe(stage1_df, rows_per_page, "stage1")
-                else:
-                    st.warning("Stage 1 kosong. Mungkin market lagi jelek banget.")
-
-                if stage2_df is not None and not stage2_df.empty:
-                    st.markdown("### 🏆 Stage 2 – Elite Picks (Strong Buy)")
-                    st.dataframe(stage2_df, use_container_width=True, height=300)
-
-                    csv = stage2_df.to_csv(index=False)
-                    st.download_button(
-                        "💾 Download Elite Picks (CSV)",
-                        data=csv,
-                        file_name=f"IDX_Elite_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-                        mime="text/csv",
-                    )
-                else:
-                    st.info("Belum ada Elite Strong Buy untuk Stage 2.")
-
-    # ========= MENU: SINGLE STOCK =========
-    elif menu == "🔍 Single Stock":
-        st.markdown("## 🔍 Single Stock Analysis")
-
-        col_sel1, col_sel2 = st.columns([2, 1])
-        with col_sel1:
-            selected = st.selectbox(
-                "Pilih saham", [t.replace(".JK", "") for t in tickers]
-            )
-        with col_sel2:
-            # period sudah di-set di sidebar
-            pass
-
-        st.markdown("### 🚀 TEKAN TOMBOL INI UNTUK ANALISA")
-        col1, col2, col3 = st.columns([1, 2, 1])
-        with col2:
-            analyze_button = st.button(
-                "🔍 ANALYZE SAHAM INI!",
-                type="primary",
-                use_container_width=True,
-                key="analyze_button",
-            )
-
-        if analyze_button:
-            ticker_full = f"{selected}.JK"
-            with st.spinner(f"Menganalisa {selected}..."):
-                df = fetch_data(ticker_full, period)
-                result = simple_score(df, ticker_full)
-
-            if result is None:
-                st.error("❌ Gagal menganalisa saham ini.")
-            else:
-                st.markdown(
-                    f"## 💎 {result['Ticker']} – {result['Signal']} (Grade {result['Grade']})"
-                )
-
-                colm1, colm2, colm3, colm4 = st.columns(4)
-                colm1.metric("Price", f"Rp {result['Price']:,.0f}")
-                colm2.metric("Score", f"{result['Score']}/100")
-                colm3.metric("Grade", result["Grade"])
-                colm4.metric("Signal", result["Signal"])
-
-                st.markdown("### 📊 Trading Levels")
-                col_t1, col_t2, col_t3, col_t4, col_t5, col_t6 = st.columns(6)
-                with col_t1:
-                    st.metric("Trend", result["Trend"])
-                with col_t2:
-                    st.metric("Entry Ideal", f"Rp {result['Entry Ideal']:,.0f}")
-                with col_t3:
-                    st.metric("Entry Agresif", f"Rp {result['Entry Agresif']:,.0f}")
-                with col_t4:
-                    st.metric("TP1", f"Rp {result['TP1']:,.0f}")
-                with col_t5:
-                    st.metric("TP2", f"Rp {result['TP2']:,.0f}")
-                with col_t6:
-                    st.metric("CL", f"Rp {result['CL']:,.0f}")
-
-                st.markdown("### 📈 Technical Details")
-                for k, v in result["Details"].items():
-                    st.write(f"**{k}**: {v}")
-
-    # ========= MENU: BSJP =========
-    elif menu == "🌙 BSJP (Beli Sore Jual Pagi)":
-        st.markdown("## 🌙 BSJP Strategy")
-        st.info("Beli Sore Jual Pagi – Overnight trading")
-
-        if st.button("🚀 SCAN BSJP NOW!", type="primary", use_container_width=True):
-            with st.spinner("Scanning untuk BSJP..."):
-                df_all = enhanced_scan_universe(tickers, "BSJP", period)
-                if not df_all.empty:
-                    stage1_df, stage2_df = manage_stage_filtering(
-                        df_all, stage1_limit, stage2_limit
-                    )
-                    if stage1_df is not None and not stage1_df.empty:
-                        display_paginated_dataframe(stage1_df, rows_per_page, "bsjp")
-
-    # ========= MENU: BPJS =========
-    elif menu == "⚡ BPJS (Beli Pagi Jual Sore)":
-        st.markdown("## ⚡ BPJS Strategy")
-        st.info("Beli Pagi Jual Sore – Day trading")
-
-        if st.button("🚀 SCAN BPJS NOW!", type="primary", use_container_width=True):
-            with st.spinner("Scanning untuk BPJS..."):
-                df_all = enhanced_scan_universe(tickers, "BPJS", period)
-                if not df_all.empty:
-                    stage1_df, stage2_df = manage_stage_filtering(
-                        df_all, stage1_limit, stage2_limit
-                    )
-                    if stage1_df is not None and not stage1_df.empty:
-                        display_paginated_dataframe(stage1_df, rows_per_page, "bpjs")
-
-    # ========= MENU: VALUE =========
-    elif menu == "💎 Value Strategy":
-        st.markdown("## 💎 Value Strategy")
-        st.info("Saham fundamental kuat & murah (versi teknikal screener)")
-
-        if st.button("🚀 SCAN VALUE NOW!", type="primary", use_container_width=True):
-            with st.spinner("Scanning untuk Value..."):
-                df_all = enhanced_scan_universe(tickers, "Value", period)
-                if not df_all.empty:
-                    stage1_df, stage2_df = manage_stage_filtering(
-                        df_all, stage1_limit, stage2_limit
-                    )
-                    if stage1_df is not None and not stage1_df.empty:
-                        display_paginated_dataframe(stage1_df, rows_per_page, "value")
-
-    # ========= MENU: BANDAR =========
-    elif menu == "🔮 Bandarmology":
-        st.markdown("## 🔮 Bandarmology")
-        st.info("Deteksi pergerakan uang besar (versi skor teknikal)")
-
-        if st.button("🚀 SCAN BANDARMOLOGY NOW!", type="primary", use_container_width=True):
-            with st.spinner("Scanning untuk Bandarmology..."):
-                df_all = enhanced_scan_universe(tickers, "Bandar", period)
-                if not df_all.empty:
-                    stage1_df, stage2_df = manage_stage_filtering(
-                        df_all, stage1_limit, stage2_limit
-                    )
-                    if stage1_df is not None and not stage1_df.empty:
-                        display_paginated_dataframe(stage1_df, rows_per_page, "bandar")
-
+        entry=round_to_tick(price*0.995); tp1=round_to_tick(entry*1.04); tp2=round_to_tick(entry*1.07); tp3=None; sl=round_to_tick(entry*0.97)
+    if trend in ["Strong Uptrend","Uptrend"] and ema21<price:
+        ema_entry=round_to_tick(ema21*1.01)
+        if price*0.9<ema_entry<price: entry=ema_entry
+    if trend=="Downtrend": sl=round_to_tick(entry*0.96)
+    return {"entry_ideal":entry,"entry_aggressive":round_to_tick(price),"tp1":tp1,"tp2":tp2,"tp3":tp3,"sl":sl}
+
+# -------------------- ORCHESTRATION --------------------
+def analyze_ticker(ticker: str, strategy: str, period: str) -> dict | None:
+    df=fetch_data(ticker, period)
+    if df is None or df.empty: return None
+    r=df.iloc[-1]
+    if strategy=="BPJS": score,details,conf,grade=score_bpjs(df)
+    elif strategy=="BSJP": score,details,conf,grade=score_bsjp(df)
+    elif strategy=="Bandar": score,details,conf,grade=score_bandar(df)
+    elif strategy=="Swing": score,details,conf,grade=score_swing(df)
+    elif strategy=="Value": score,details,conf,grade=score_value(df)
+    else: score,details,conf,grade=score_general(df)
+    if grade not in ["A+","A","B+","B","C"]: return None
+    trend=detect_trend(r); signal=classify_signal(r,score,grade,trend); plan=compute_trade_plan(df, strategy, trend)
+    res={"Ticker":ticker.replace(".JK",""),"Price":float(r["Close"]),"Score":score,"Confidence":conf,"Grade":grade,"Trend":trend,"Signal":signal,
+         "Entry":plan["entry_ideal"],"Entry_Aggressive":plan["entry_aggressive"],"TP1":plan["tp1"],"TP2":plan["tp2"],"SL":plan["sl"],"Details":details}
+    if plan["tp3"]: res["TP3"]=plan["tp3"]
+    return res
+
+# -------------------- SESSION & SCAN --------------------
+def save_scan_to_session(df2: pd.DataFrame, df1: pd.DataFrame, strategy: str):
+    st.session_state.last_scan_results=(df2,df1)
+    st.session_state.last_scan_time=datetime.now()
+    st.session_state.last_scan_strategy=strategy
+    st.session_state.scan_count=(st.session_state.scan_count or 0)+1
+
+def display_last_scan_info()->bool:
+    if st.session_state.last_scan_results:
+        df2,_=st.session_state.last_scan_results
+        mins=int((datetime.now()-st.session_state.last_scan_time).total_seconds()/60)
+        st.markdown(f"""
+        <div style='background:linear-gradient(135deg,#064e3b 0%,#065f46 100%); padding:12px;border-radius:8px;margin-bottom:15px;border-left:4px solid #10b981;'>
+          <p style='margin:0;color:white;font-weight:bold;'>📂 LAST SCAN RESULTS</p>
+          <p style='margin:5px 0 0 0;color:#d1fae5;font-size:0.9em;'>Strategy: {st.session_state.last_scan_strategy} |
+          Time: {st.session_state.last_scan_time.strftime('%H:%M:%S')} ({mins} min ago) | Found: {len(df2)} Grade A+/A/B+ stocks</p>
+        </div>""", unsafe_allow_html=True); return True
+    return False
+
+def create_csv_download(df: pd.DataFrame, strategy: str):
+    if df is None or df.empty: return
+    export=df.drop(columns=["Details"], errors="ignore").copy()
+    csv=export.to_csv(index=False).encode("utf-8")
+    ts=datetime.now().strftime("%Y%m%d_%H%M")
+    st.download_button("💾 Download Results (CSV)", data=csv, file_name=f"IDX_{strategy}_scan_{ts}.csv", mime="text/csv")
+
+def process_ticker(t: str, strategy: str, period: str):
+    try: return analyze_ticker(t, strategy, period)
+    except Exception: return None
+
+def scan_stocks(tickers: list[str], strategy: str, period: str, limit1: int, limit2: int):
+    st.info(f"🔍 **STAGE 1**: Scanning {len(tickers)} stocks for {strategy}...")
+    results=[]; progress=st.progress(0); status=st.empty()
+    with ThreadPoolExecutor(max_workers=10) as ex:
+        futures={ex.submit(process_ticker,t,strategy,period):t for t in tickers}
+        done=0
+        for fut in as_completed(futures):
+            done+=1; progress.progress(done/len(tickers)); status.text(f"📊 {done}/{len(tickers)} | Found: {len(results)}")
+            r=fut.result()
+            if r: results.append(r)
+            time.sleep(0.01)
+    progress.empty(); status.empty()
+    if not results: return pd.DataFrame(), pd.DataFrame()
+    df1=pd.DataFrame(results).sort_values(["Score","Confidence"], ascending=False).head(limit1)
+    st.success(f"✅ Stage 1: Found {len(df1)} candidates (Avg score: {df1['Score'].mean():.0f})")
+    df2=df1[df1["Grade"].isin(["A+","A","B+","B"])].head(limit2)
+    st.success(f"🏆 Stage 2: {len(df2)} elite picks (Avg conf: {df2['Confidence'].mean():.0f}%)")
+    save_scan_to_session(df2, df1, strategy)
+    return df1, df2
+
+# -------------------- UI --------------------
+st.title("🚀 IDX Power Screener v5.0")
+st.caption("BPJS / BSJP / Bandar / Swing / Value + IHSG + Session + Tick-size")
+display_ihsg_widget()
+tickers=load_tickers()
+
+with st.sidebar:
+    st.markdown("## ⚙️ Settings")
+    st.info(f"📊 Total stocks: {len(tickers)}")
+    st.caption(f"🕐 Jakarta: {get_jakarta_time().strftime('%H:%M WIB')}")
     st.markdown("---")
-    st.caption("⚡ IDX Power Screener v8.2 – EXTREME BUILD • Stage 1 & 2 Optimized")
+    menu=st.radio("📋 Strategy",["⚡ SPEED Trader (1-2d)","🎯 SWING Trader (3-5d)","💎 VALUE Plays (Undervalued)","⚡ BPJS (Day Trading)","🌙 BSJP (Overnight)","🔮 Bandar Tracking","🔍 Single Stock"])
+    st.markdown("---")
+    if "Single" not in menu:
+        period=st.selectbox("Period",["3mo","6mo","1y"],index=1)
+        st.markdown("### 🎯 Filtering")
+        c1,c2=st.columns(2)
+        with c1: limit1=st.slider("Stage 1: Top N",20,100,50,10)
+        with c2: limit2=st.slider("Stage 2: Elite",5,30,10,5)
+        sublist_input=st.text_input("Filter tickers (comma separated, optional)", placeholder="e.g. BBRI, BBCA, TLKM")
+        run_scan=st.button("🚀 RUN SCAN", type="primary", use_container_width=True)
+    st.caption("v5.0 – Robust fetch + full strategies + tick-aware")
 
-if __name__ == "__main__":
-    main()
+display_last_scan_info()
+
+def show_table(df: pd.DataFrame, title: str):
+    if df is None or df.empty: st.warning("Tidak ada hasil."); return
+    st.subheader(title)
+    show=df.copy()
+    if "Price" in show: show["Price"]=show["Price"].apply(lambda x: round_to_tick(x))
+    order=[c for c in ["Ticker","Price","Score","Confidence","Grade","Trend","Signal","Entry","Entry_Aggressive","TP1","TP2","TP3","SL"] if c in show.columns]
+    st.dataframe(show[order], use_container_width=True, hide_index=True)
+    create_csv_download(show[order], title.replace(" ","_"))
+    with st.expander("🔎 Detail per saham"):
+        for _,row in show.iterrows():
+            st.markdown(f"**{row['Ticker']}** | Grade **{row['Grade']}** | Trend **{row['Trend']}** | Signal **{row['Signal']}**")
+            tp3=f" | TP3 {format_idr(row['TP3'])}" if "TP3" in row and pd.notna(row["TP3"]) else ""
+            st.caption(f"Price {format_idr(row['Price'])} | Entry {format_idr(row['Entry'])} (Agg {format_idr(row['Entry_Aggressive'])}) | TP1 {format_idr(row['TP1'])} | TP2 {format_idr(row['TP2'])}{tp3} | SL {format_idr(row['SL'])}")
+            details=row.get("Details",{})
+            if isinstance(details,dict) and details: st.write({k:str(v) for k,v in details.items()})
+            st.markdown("---")
+
+# Single Stock
+if "Single Stock" in menu:
+    st.markdown("### 🔍 Single Stock Analysis")
+    default_symbol=tickers[0].replace(".JK","") if tickers else "BBRI"
+    selected=st.text_input("Symbol (tanpa .JK)", value=default_symbol).strip().upper()
+    strategy_single=st.selectbox("Strategy",["General","BPJS","BSJP","Bandar","Swing","Value"])
+    period=st.selectbox("Period",["3mo","6mo","1y"],index=1)
+    if st.button("🔍 ANALYZE", type="primary"):
+        full=normalize_ticker(selected)
+        with st.spinner(f"Analyzing {selected}..."):
+            df=fetch_data(full, period)
+            if df is None: st.error("❌ Failed to fetch data")
+            else:
+                res=analyze_ticker(full, strategy_single, period)
+                st.markdown("### 📊 Interactive Chart")
+                chart=create_chart(df, selected)
+                if chart: st.plotly_chart(chart, use_container_width=True)
+                if res is None: st.error("❌ Analysis failed or rejected by filters")
+                else:
+                    st.markdown(f"## 💎 {res['Ticker']}")
+                    st.markdown(f"### Grade: **{res['Grade']}** | Trend: **{res['Trend']}** | Signal: **{res['Signal']}**")
+                    c1,c2,c3=st.columns(3)
+                    c1.metric("Price", format_idr(res["Price"])); c2.metric("Score", f"{res['Score']}/100"); c3.metric("Confidence", f"{res['Confidence']}%")
+                    label={"General":"SPEED PLAN (1–2 Hari)","BPJS":"BPJS PLAN (Intraday)","BSJP":"BSJP PLAN (Overnight)","Bandar":"Bandar PLAN (Momentum)","Swing":"SWING PLAN (3–5 Hari)","Value":"VALUE PLAN (Rebound)"}[strategy_single]
+                    tp3_line=f"• **TP3:** {format_idr(res['TP3'])}  \n" if "TP3" in res else ""
+                    st.success(f"⚡ **{label}**  \n• **Entry Ideal:** {format_idr(res['Entry'])}  \n• **Entry Agresif:** {format_idr(res['Entry_Aggressive'])}  \n• **TP1:** {format_idr(res['TP1'])}  \n• **TP2:** {format_idr(res['TP2'])}  \n{tp3_line}• **Stop Loss:** {format_idr(res['SL'])}")
+                    st.markdown("**Technical Notes:**")
+                    for k,v in res["Details"].items(): st.caption(f"• **{k}**: {v}")
+
+# Scan modes
+else:
+    strategy_map={"⚡ SPEED Trader (1-2d)":"General","🎯 SWING Trader (3-5d)":"Swing","💎 VALUE Plays (Undervalued)":"Value","⚡ BPJS (Day Trading)":"BPJS","🌙 BSJP (Overnight)":"BSJP","🔮 Bandar Tracking":"Bandar"}
+    strategy=strategy_map[menu]
+    run_list=tickers
+    if "sublist_input" in locals() and sublist_input:
+        parts=[normalize_ticker(x) for x in sublist_input.split(",") if x.strip()]
+        if parts: run_list=parts; st.info(f"Using custom tickers: {', '.join([p.replace('.JK','') for p in parts])}")
+    if "run_scan" in locals() and run_scan:
+        if not run_list: st.error("Daftar tickers kosong. Tambahkan idx_stocks.json atau input custom.")
+        else:
+            df1,df2=scan_stocks(run_list, strategy, period, limit1, limit2)
+            if df1.empty and df2.empty: st.error("❌ No stocks matched filters.")
+            else:
+                show_table(df1, "Stage 1 – Candidates")
+                show_table(df2, "Stage 2 – Elite Picks")
+    else:
+        st.info("Klik **RUN SCAN** untuk memulai pemindaian saham.")
+
+st.markdown("---")
+st.caption("🚀 IDX Power Screener v5.0 | Educational purposes only | Tick-size aware | Robust fetching")
