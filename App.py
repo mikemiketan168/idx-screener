@@ -44,73 +44,73 @@ def load_tickers():
         "BCAP", "BCIC", "BCIP", "BEKS", "BELL", "BELT", "BESS", "BEST", "BFIN", "BGTG",
         "BHIT", "BIKA", "BIKE", "BIMA", "BINA", "BIPI", "BIPP", "BIRD", "BISI", "BJBR",
         "BJTM", "BKDP", "BKSL", "BLTA", "BLTZ", "BLUE", "BMAS", "BMHS", "BMRI", "BMSR",
-        "BMTR", "BNBA", "BNBR", "BNGA", "BNII", "BNLI", "BOAT", "BOBA", "BOGA", "BOLT",
-        "BOSS", "BPTR", "BRAM", "BREN", "BRMS", "BRNA", "BRPT", "BSDE", "BSIM", "BSSR",
-        "BSWD", "BTEK", "BTON", "BTPN", "BTPS", "BUDI", "BUKK", "BUMI", "BUVA", "BVIC",
-        "BWPT", "BYAN", "CAKK", "CAMP", "CANI", "CARS", "CASA", "CASH", "CASS", "CBDK",
-        "CBMF", "CBPE", "CBUT", "CCSI", "CEKA", "CEKO", "CENT", "CFIN", "CGAS", "CHEM",
-        "CHME", "CINT", "CITA", "CITY", "CLAY", "CLEO", "CLPI", "CMNP", "CMNT", "CMPP",
-        "CMRY", "CNKO", "CNTB", "CNTX", "COAL", "COCO", "CODE", "COWL", "CPGT", "CPIN",
-        "CPRI", "CPRO", "CSAP", "CSIS", "CSMI", "CSRA", "CTBN", "CTRA", "CTRS", "CTTH",
-        "DADA", "DAJK", "DAMA", "DANA", "DAYA", "DCII", "DECI", "DEFI", "DEWA", "DFAM",
-        "DGIK", "DIGI", "DILD", "DIVA", "DKFT", "DLTA", "DMAS", "DMMX", "DMND", "DNAR",
-        "DNET", "DOID", "DPUM", "DRMA", "DSFI", "DSNG", "DSSA", "DUCK", "DVLA", "DWGL",
-        "DYAN", "EAST", "ECII", "EDGE", "EKAD", "ELPI", "ELSA", "ELTY", "EMDE", "EMTK",
-        "ENAK", "ENRG", "ENVY", "EPAC", "EPMT", "ERAA", "ERAL", "ERIC", "ERTX", "ESIP",
-        "ESSA", "ESTA", "EURO", "EXCL", "FAPA", "FAST", "FASW", "FILM", "FIRE", "FISH",
-        "FITT", "FMII", "FOLK", "FOOD", "FORZ", "FPNI", "FREN", "FUJI", "GAMA", "GDST",
-        "GDYR", "GEMA", "GEMS", "GGRM", "GGRP", "GHON", "GIAA", "GJTL", "GLOB", "GLVA",
-        "GMFI", "GMTD", "GOLD", "GOLL", "GOOD", "GOTO", "GPRA", "GRDP", "GRIA", "GRPM",
-        "GTBO", "GTRA", "GTSI", "GUNA", "GWSA", "HADE", "HAIS", "HAKA", "HALO", "HAPB",
-        "HAPS", "HATM", "HBAT", "HDIT", "HDTX", "HEAL", "HEAR", "HELI", "HERO", "HEXA",
-        "HILL", "HKMU", "HOKI", "HOME", "HOPE", "HOTL", "HRME", "HRTA", "IATA", "IBFN",
-        "IBOS", "IBST", "ICBP", "ICON", "IDEA", "IDPR", "IGAR", "IIKP", "IKAI", "IKBI",
-        "IKAN", "IKLH", "IMAS", "IMJS", "IMPC", "IMPG", "INAF", "INAL", "INCO", "INCR",
-        "INDF", "INDR", "INDS", "INDX", "INDY", "INET", "INOV", "INPC", "INPP", "INPS",
-        "INRU", "INTA", "INTD", "INTP", "IPAC", "IPCC", "IPCM", "IPOL", "IQCO", "IPTV",
-        "IRRA", "ISAT", "ISSP", "ITIC", "ITMA", "ITMG", "JAKA", "JALI", "JAMF", "JAST",
-        "JAWA", "JAYA", "JECC", "JGLE", "JIHD", "JKON", "JKSW", "JMAS", "JMTO", "JNPL",
-        "JOEL", "JOGE", "JOJO", "JPFA", "JRPT", "JSKY", "JSMR", "JSPT", "JTPE", "KAEF",
-        "KARW", "KAYU", "KBAG", "KBLI", "KBLM", "KBLV", "KBRI", "KDSI", "KEEN", "KIAS",
-        "KICI", "KIJA", "KINO", "KIOS", "KJEN", "KLIN", "KLBF", "KMDS", "KMTR", "KOBX",
-        "KOIN", "KOKA", "KONI", "KOPI", "KOTA", "KPAL", "KPAS", "KPIG", "KRAH", "KRAS",
-        "KREN", "KUAS", "LAMB", "LAND", "LAPD", "LAUT", "LCKM", "LEAD", "LIFE", "LINK",
-        "LION", "LMAS", "LMPI", "LMSH", "LPCK", "LPGI", "LPIN", "LPKR", "LPLI", "LPPF",
-        "LPPS", "LRNA", "LUCY", "LUCK", "MAIN", "MAMI", "MANG", "MAPA", "MAPB", "MAPI",
-        "MARK", "MASA", "MAYA", "MBAP", "MBMA", "MBSS", "MBTO", "MCAS", "MCOR", "MDIA",
-        "MDKA", "MDKI", "MDLN", "MDRN", "MEDC", "MEGA", "MEJA", "MEKO", "MERC", "MERK",
-        "META", "MFIN", "MFMI", "MGNA", "MGRO", "MICE", "MIDI", "MIKA", "MINA", "MITI",
-        "MKNT", "MKPI", "MLBI", "MLIA", "MLPL", "MLPT", "MMLP", "MNCN", "MNGA", "MOLI",
-        "MPMX", "MPOW", "MPPA", "MRAT", "MREI", "MSKY", "MTDL", "MTFN", "MTLA", "MTOR",
-        "MTRA", "MTSM", "MTWI", "MYOH", "MYOR", "MYRX", "MYTX", "NAGA", "NASA", "NASI",
-        "NATO", "NELY", "NETV", "NFCX", "NICK", "NICL", "NIKL", "NIKP", "NIPS", "NIRO",
-        "NISP", "NOBU", "NRCA", "NUSA", "OASA", "OBMD", "OCAP", "OKAS", "OMRE", "OPMS",
-        "ORIN", "PACK", "PADI", "PALM", "PANI", "PANR", "PANS", "PAPA", "PARS", "PAXE",
-        "PBID", "PBRX", "PBSA", "PCAR", "PDES", "PEGE", "PGAS", "PGEO", "PGLI", "PGUN",
-        "PICO", "PJAA", "PKPK", "PLAS", "PLIN", "PNBN", "PNBS", "PNGO", "PNIN", "PNLF",
-        "PNSE", "POLA", "POLI", "POLL", "POLU", "POLY", "POML", "POND", "POOL", "PORT",
-        "POSA", "POWR", "PPGL", "PPRE", "PPRO", "PRAS", "PRDA", "PRIM", "PSAB", "PSDN",
-        "PSGO", "PSKT", "PSSI", "PTBA", "PTIS", "PTPN", "PTPP", "PTPS", "PTRO", "PTSN",
-        "PUDP", "PURA", "PURE", "PURI", "PWON", "PYFA", "PZZA", "RAJA", "RALS", "RANC",
-        "RAND", "RBMS", "RDTX", "REAL", "RELI", "RICY", "RIDE", "RIGS", "RISE", "RIMO",
-        "RION", "RLIS", "ROCK", "RODA", "ROTI", "RUIS", "RUNS", "SAFE", "SAGA", "SAMP",
-        "SAMR", "SATU", "SBAT", "SBMA", "SCBD", "SCCO", "SCMA", "SCNP", "SCPI", "SDMU",
-        "SDPC", "SDRA", "SGER", "SGRO", "SHID", "SICO", "SIDO", "SIER", "SILO", "SIMA",
-        "SIMP", "SIMZ", "SINI", "SIPD", "SKBM", "SKLT", "SKRN", "SKYB", "SLIS", "SMAR",
-        "SMBR", "SMCB", "SMDM", "SMDR", "SMGR", "SMKL", "SMKM", "SMMA", "SMMT", "SMRA",
-        "SMRU", "SMSM", "SNLK", "SOCI", "SODA", "SOFA", "SOHO", "SONA", "SOUL", "SOSS",
-        "SPMA", "SPTO", "SQMI", "SRAJ", "SRIL", "SRSN", "SRTG", "SSIA", "SSMS", "SSTM",
-        "STAR", "STTP", "SUGI", "SULI", "SUPE", "SUPX", "SURE", "SWAT", "TAFA", "TAKA",
-        "TALF", "TAMA", "TANK", "TAPG", "TARA", "TAXI", "TAYS", "TBIG", "TBLA", "TBMS",
-        "TCID", "TEBE", "TECH", "TELE", "TFAS", "TFCO", "TGKA", "TGRA", "TGUK", "TIFA",
-        "TINS", "TIRA", "TIRT", "TISI", "TKIM", "TLKM", "TMAS", "TMPO", "TNCA", "TOBA",
-        "TOSK", "TOTL", "TOUR", "TPIA", "TPMA", "TRAM", "TRIL", "TRIM", "TRIN", "TRIS",
-        "TRJA", "TRST", "TRUE", "TRUK", "TRUS", "TSPC", "TSTD", "TTMA", "TURI", "UANG",
-        "UCID", "UFOE", "UFLY", "ULTJ", "UMIC", "UNIC", "UNIQ", "UNIT", "UNTR", "UNVR",
-        "URBN", "UVCR", "VICO", "VINS", "VIVA", "VKTR", "VNTR", "VOKS", "VRNA", "WAPO",
-        "WAPU", "WEGE", "WEHA", "WIFI", "WIIM", "WIKA", "WINE", "WINS", "WIRG", "WOOD",
-        "WSKT", "WTON", "YELO", "YPAS", "YULE", "ZBRA", "ZINC", "ZONE", "RATU", "CDIA",
-        "CUAN", "COIN", "JARR", "GZCO", "NCKL", "CBRE", "AADI", "FUTR", "ZPAY"
+        "BMTR", "BNBA", "BNBR", "BNGA", "BNII", "BNLI", "BOAT", "BOGA", "BOLT", "BOSS",
+        "BPTR", "BRAM", "BREN", "BRMS", "BRNA", "BRPT", "BSDE", "BSIM", "BSSR", "BSWD",
+        "BTEK", "BTON", "BTPN", "BTPS", "BUDI", "BUKK", "BUMI", "BUVA", "BVIC", "BWPT",
+        "BYAN", "CAKK", "CAMP", "CANI", "CARS", "CASA", "CASH", "CASS", "CBDK", "CBMF",
+        "CBPE", "CBUT", "CCSI", "CEKA", "CEKO", "CENT", "CFIN", "CGAS", "CHEM", "CHME",
+        "CINT", "CITA", "CITY", "CLAY", "CLEO", "CLPI", "CMNP", "CMNT", "CMPP", "CMRY",
+        "CNKO", "CNTB", "CNTX", "COAL", "COCO", "CODE", "COWL", "CPGT", "CPIN", "CPRI",
+        "CPRO", "CSAP", "CSIS", "CSMI", "CSRA", "CTBN", "CTRA", "CTRS", "CTTH", "DADA",
+        "DAJK", "DAMA", "DANA", "DAYA", "DCII", "DECI", "DEFI", "DEWA", "DFAM", "DGIK",
+        "DIGI", "DILD", "DIVA", "DKFT", "DLTA", "DMAS", "DMMX", "DMND", "DNAR", "DNET",
+        "DOID", "DPUM", "DRMA", "DSFI", "DSNG", "DSSA", "DUCK", "DVLA", "DWGL", "DYAN",
+        "EAST", "ECII", "EDGE", "EKAD", "ELPI", "ELSA", "ELTY", "EMDE", "EMTK", "ENAK",
+        "ENRG", "ENVY", "EPAC", "EPMT", "ERAA", "ERAL", "ERIC", "ERTX", "ESIP", "ESSA",
+        "ESTA", "EURO", "EXCL", "FAPA", "FAST", "FASW", "FILM", "FIRE", "FISH", "FITT",
+        "FMII", "FOLK", "FOOD", "FORZ", "FPNI", "FREN", "FUJI", "GAMA", "GDST", "GDYR",
+        "GEMA", "GEMS", "GGRM", "GGRP", "GHON", "GIAA", "GJTL", "GLOB", "GLVA", "GMFI",
+        "GMTD", "GOLD", "GOLL", "GOOD", "GOTO", "GPRA", "GRDP", "GRIA", "GRPM", "GTBO",
+        "GTRA", "GTSI", "GUNA", "GWSA", "HADE", "HAIS", "HAKA", "HALO", "HAPB", "HAPS",
+        "HATM", "HBAT", "HDIT", "HDTX", "HEAL", "HEAR", "HELI", "HERO", "HEXA", "HILL",
+        "HKMU", "HOKI", "HOME", "HOPE", "HOTL", "HRME", "HRTA", "IATA", "IBFN", "IBOS",
+        "IBST", "ICBP", "ICON", "IDEA", "IDPR", "IGAR", "IIKP", "IKAI", "IKBI", "IKAN",
+        "IKLH", "IMAS", "IMJS", "IMPC", "IMPG", "INAF", "INAL", "INCO", "INCR", "INDF",
+        "INDR", "INDS", "INDX", "INDY", "INET", "INOV", "INPC", "INPP", "INPS", "INRU",
+        "INTA", "INTD", "INTP", "IPAC", "IPCC", "IPCM", "IPOL", "IQCO", "IPTV", "IRRA",
+        "ISAT", "ISSP", "ITIC", "ITMA", "ITMG", "JAKA", "JALI", "JAMF", "JAST", "JAWA",
+        "JAYA", "JECC", "JGLE", "JIHD", "JKON", "JKSW", "JMAS", "JMTO", "JNPL", "JOEL",
+        "JOGE", "JOJO", "JPFA", "JRPT", "JSKY", "JSMR", "JSPT", "JTPE", "KAEF", "KARW",
+        "KAYU", "KBAG", "KBLI", "KBLM", "KBLV", "KBRI", "KDSI", "KEEN", "KIAS", "KICI",
+        "KIJA", "KINO", "KIOS", "KJEN", "KLIN", "KLBF", "KMDS", "KMTR", "KOBX", "KOIN",
+        "KOKA", "KONI", "KOPI", "KOTA", "KPAL", "KPAS", "KPIG", "KRAH", "KRAS", "KREN",
+        "KUAS", "LAMB", "LAND", "LAPD", "LAUT", "LCKM", "LEAD", "LIFE", "LINK", "LION",
+        "LMAS", "LMPI", "LMSH", "LPCK", "LPGI", "LPIN", "LPKR", "LPLI", "LPPF", "LPPS",
+        "LRNA", "LUCY", "LUCK", "MAIN", "MAMI", "MANG", "MAPA", "MAPB", "MAPI", "MARK",
+        "MASA", "MAYA", "MBAP", "MBMA", "MBSS", "MBTO", "MCAS", "MCOR", "MDIA", "MDKA",
+        "MDKI", "MDLN", "MDRN", "MEDC", "MEGA", "MEJA", "MEKO", "MERC", "MERK", "META",
+        "MFIN", "MFMI", "MGNA", "MGRO", "MICE", "MIDI", "MIKA", "MINA", "MITI", "MKNT",
+        "MKPI", "MLBI", "MLIA", "MLPL", "MLPT", "MMLP", "MNCN", "MNGA", "MOLI", "MPMX",
+        "MPOW", "MPPA", "MRAT", "MREI", "MSKY", "MTDL", "MTFN", "MTLA", "MTOR", "MTRA",
+        "MTSM", "MTWI", "MYOH", "MYOR", "MYRX", "MYTX", "NAGA", "NASA", "NASI", "NATO",
+        "NELY", "NETV", "NFCX", "NICK", "NICL", "NIKL", "NIKP", "NIPS", "NIRO", "NISP",
+        "NOBU", "NRCA", "NUSA", "OASA", "OBMD", "OCAP", "OKAS", "OMRE", "OPMS", "ORIN",
+        "PACK", "PADI", "PALM", "PANI", "PANR", "PANS", "PAPA", "PARS", "PAXE", "PBID",
+        "PBRX", "PBSA", "PCAR", "PDES", "PEGE", "PGAS", "PGEO", "PGLI", "PGUN", "PICO",
+        "PJAA", "PKPK", "PLAS", "PLIN", "PNBN", "PNBS", "PNGO", "PNIN", "PNLF", "PNSE",
+        "POLA", "POLI", "POLL", "POLU", "POLY", "POML", "POND", "POOL", "PORT", "POSA",
+        "POWR", "PPGL", "PPRE", "PPRO", "PRAS", "PRDA", "PRIM", "PSAB", "PSDN", "PSGO",
+        "PSKT", "PSSI", "PTBA", "PTIS", "PTPN", "PTPP", "PTPS", "PTRO", "PTSN", "PUDP",
+        "PURA", "PURE", "PURI", "PWON", "PYFA", "PZZA", "RAJA", "RALS", "RANC", "RAND",
+        "RBMS", "RDTX", "REAL", "RELI", "RICY", "RIDE", "RIGS", "RISE", "RIMO", "RION",
+        "RLIS", "ROCK", "RODA", "ROTI", "RUIS", "RUNS", "SAFE", "SAGA", "SAMP", "SAMR",
+        "SATU", "SBAT", "SBMA", "SCBD", "SCCO", "SCMA", "SCNP", "SCPI", "SDMU", "SDPC",
+        "SDRA", "SGER", "SGRO", "SHID", "SICO", "SIDO", "SIER", "SILO", "SIMA", "SIMP",
+        "SIMZ", "SINI", "SIPD", "SKBM", "SKLT", "SKRN", "SKYB", "SLIS", "SMAR", "SMBR",
+        "SMCB", "SMDM", "SMDR", "SMGR", "SMKL", "SMKM", "SMMA", "SMMT", "SMRA", "SMRU",
+        "SMSM", "SNLK", "SOCI", "SODA", "SOFA", "SOHO", "SONA", "SOUL", "SOSS", "SPMA",
+        "SPTO", "SQMI", "SRAJ", "SRIL", "SRSN", "SRTG", "SSIA", "SSMS", "SSTM", "STAR",
+        "STTP", "SUGI", "SULI", "SUPE", "SUPX", "SURE", "SWAT", "TAFA", "TAKA", "TALF",
+        "TAMA", "TANK", "TAPG", "TARA", "TAXI", "TAYS", "TBIG", "TBLA", "TBMS", "TCID",
+        "TEBE", "TECH", "TELE", "TFAS", "TFCO", "TGKA", "TGRA", "TGUK", "TIFA", "TINS",
+        "TIRA", "TIRT", "TISI", "TKIM", "TLKM", "TMAS", "TMPO", "TNCA", "TOBA", "TOSK",
+        "TOTL", "TOUR", "TPIA", "TPMA", "TRAM", "TRIL", "TRIM", "TRIN", "TRIS", "TRJA",
+        "TRST", "TRUE", "TRUK", "TRUS", "TSPC", "TSTD", "TTMA", "TURI", "UANG", "UCID",
+        "UFOE", "UFLY", "ULTJ", "UMIC", "UNIC", "UNIQ", "UNIT", "UNTR", "UNVR", "URBN",
+        "UVCR", "VICO", "VINS", "VIVA", "VKTR", "VNTR", "VOKS", "VRNA", "WAPO", "WAPU",
+        "WEGE", "WEHA", "WIFI", "WIIM", "WIKA", "WINE", "WINS", "WIRG", "WOOD", "WSKT",
+        "WTON", "YELO", "YPAS", "YULE", "ZBRA", "ZINC", "ZONE", "RATU", "CDIA", "CUAN",
+        "COIN", "JARR", "GZCO", "NCKL", "CBRE", "AADI", "FUTR", "ZPAY"
     ]
     
     return [f"{ticker}.JK" for ticker in complete_tickers]
@@ -228,6 +228,76 @@ def display_ihsg_widget():
 def get_jakarta_time():
     return datetime.now(timezone(timedelta(hours=7)))
 
+# ============= CALCULATE TRADING LEVELS =============
+def calculate_trading_levels(df, current_price):
+    """Calculate trading levels based on price action"""
+    if df is None or len(df) < 20:
+        return {
+            "trend": "Unknown",
+            "entry_ideal": 0,
+            "entry_agresif": 0,
+            "tp1": 0,
+            "tp2": 0,
+            "cl": 0
+        }
+    
+    try:
+        # Calculate trend
+        if len(df) >= 20:
+            sma_20 = df['Close'].tail(20).mean()
+            sma_5 = df['Close'].tail(5).mean()
+            
+            if sma_5 > sma_20 and current_price > sma_20:
+                trend = "🟢 Uptrend"
+            elif sma_5 < sma_20 and current_price < sma_20:
+                trend = "🔴 Downtrend"
+            else:
+                trend = "🟡 Sideways"
+        else:
+            trend = "🟡 Sideways"
+        
+        # Calculate support and resistance levels
+        recent_low = df['Low'].tail(10).min()
+        recent_high = df['High'].tail(10).max()
+        
+        # Calculate trading levels
+        if trend == "🟢 Uptrend":
+            entry_ideal = max(current_price * 0.98, recent_low)
+            entry_agresif = current_price * 0.995
+            tp1 = current_price * 1.03
+            tp2 = current_price * 1.06
+            cl = current_price * 0.97
+        elif trend == "🔴 Downtrend":
+            entry_ideal = min(current_price * 1.02, recent_high)
+            entry_agresif = current_price * 1.005
+            tp1 = current_price * 0.97
+            tp2 = current_price * 0.94
+            cl = current_price * 1.03
+        else:  # Sideways
+            entry_ideal = current_price * 0.99
+            entry_agresif = current_price * 0.995
+            tp1 = current_price * 1.02
+            tp2 = current_price * 1.04
+            cl = current_price * 0.98
+        
+        return {
+            "trend": trend,
+            "entry_ideal": round(entry_ideal, 2),
+            "entry_agresif": round(entry_agresif, 2),
+            "tp1": round(tp1, 2),
+            "tp2": round(tp2, 2),
+            "cl": round(cl, 2)
+        }
+    except Exception:
+        return {
+            "trend": "Unknown",
+            "entry_ideal": 0,
+            "entry_agresif": 0,
+            "tp1": 0,
+            "tp2": 0,
+            "cl": 0
+        }
+
 # ============= SIMPLE SCORING SYSTEM =============
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_data(ticker, period="3mo"):
@@ -241,7 +311,7 @@ def fetch_data(ticker, period="3mo"):
         return None
 
 def simple_score(df, ticker):
-    """Simple scoring function"""
+    """Simple scoring function with trading levels"""
     if df is None or len(df) < 20:
         return None
     
@@ -268,6 +338,9 @@ def simple_score(df, ticker):
             momentum_20d = 0
             
         volume_ratio = volume / avg_volume if avg_volume > 0 else 1
+        
+        # Calculate trading levels
+        trading_levels = calculate_trading_levels(df, last_close)
         
         # Simple score calculation
         score = 0
@@ -338,6 +411,12 @@ def simple_score(df, ticker):
             "Score": score,
             "Grade": grade,
             "Signal": signal,
+            "Trend": trading_levels["trend"],
+            "Entry Ideal": trading_levels["entry_ideal"],
+            "Entry Agresif": trading_levels["entry_agresif"],
+            "TP1": trading_levels["tp1"],
+            "TP2": trading_levels["tp2"],
+            "CL": trading_levels["cl"],
             "Momentum_5D": momentum_5d,
             "Momentum_20D": momentum_20d,
             "Volume_Ratio": volume_ratio,
@@ -393,7 +472,7 @@ def process_ticker(ticker, strategy, period):
         return None
 
 def display_paginated_dataframe(df, rows_per_page, key_suffix=""):
-    """Fixed pagination system"""
+    """Fixed pagination system with new columns"""
     if df.empty:
         st.info("No data to display")
         return
@@ -411,10 +490,14 @@ def display_paginated_dataframe(df, rows_per_page, key_suffix=""):
     start_idx = (page - 1) * rows_per_page
     end_idx = min(start_idx + rows_per_page, total_rows)
     
+    # Display dataframe with new columns
+    display_columns = [
+        "Ticker", "Price", "Score", "Grade", "Signal", "Trend", 
+        "Entry Ideal", "Entry Agresif", "TP1", "TP2", "CL"
+    ]
+    
     st.dataframe(
-        df.iloc[start_idx:end_idx][
-            ["Ticker", "Price", "Score", "Grade", "Signal", "Momentum_5D", "Volume_Ratio"]
-        ],
+        df.iloc[start_idx:end_idx][display_columns],
         use_container_width=True,
         height=400,
     )
@@ -444,8 +527,8 @@ def manage_stage_filtering(df_all, stage1_limit, stage2_limit):
     return stage1_df, stage2_df
 
 def main():
-    st.title("⚡ IDX Power Screener – COMPLETE WITH BUTTONS")
-    st.caption("799 Saham Lengkap • Tombol Jelas • Hasil Akurat")
+    st.title("⚡ IDX Power Screener – COMPLETE WITH TRADING LEVELS")
+    st.caption("799 Saham Lengkap • Level Trading • Hasil Akurat")
 
     display_ihsg_widget()
     tickers = load_tickers()
@@ -477,7 +560,7 @@ def main():
             rows_per_page = st.selectbox("Rows per page", options=[20, 40, 60, 80, 100], index=1)
 
         st.markdown("---")
-        st.caption("v8.0 – Complete with Clear Buttons")
+        st.caption("v8.1 – Complete with Trading Levels")
 
     # ============= 🔎 SCREEN ALL IDX =============
     if menu == "🔎 Screen ALL IDX":
@@ -560,7 +643,23 @@ def main():
                 colm3.metric("Grade", result["Grade"])
                 colm4.metric("Signal", result["Signal"])
                 
-                st.markdown("### 📊 Technical Details")
+                # Trading Levels
+                st.markdown("### 📊 Trading Levels")
+                col_t1, col_t2, col_t3, col_t4, col_t5, col_t6 = st.columns(6)
+                with col_t1:
+                    st.metric("Trend", result["Trend"])
+                with col_t2:
+                    st.metric("Entry Ideal", f"Rp {result['Entry Ideal']:,.0f}")
+                with col_t3:
+                    st.metric("Entry Agresif", f"Rp {result['Entry Agresif']:,.0f}")
+                with col_t4:
+                    st.metric("TP1", f"Rp {result['TP1']:,.0f}")
+                with col_t5:
+                    st.metric("TP2", f"Rp {result['TP2']:,.0f}")
+                with col_t6:
+                    st.metric("CL", f"Rp {result['CL']:,.0f}")
+                
+                st.markdown("### 📈 Technical Details")
                 for k, v in result["Details"].items():
                     st.write(f"**{k}**: {v}")
 
@@ -614,7 +713,7 @@ def main():
                     display_paginated_dataframe(stage1_df, rows_per_page, "bandar")
 
     st.markdown("---")
-    st.caption("⚡ IDX Power Screener v8.0 • Tombol jelas di setiap menu!")
+    st.caption("⚡ IDX Power Screener v8.1 • Dengan Level Trading Lengkap!")
 
 if __name__ == "__main__":
     main()
