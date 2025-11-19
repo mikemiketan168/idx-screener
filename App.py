@@ -1,21 +1,28 @@
-# app.py
 #!/usr/bin/env python3
+# app.py – IDX Power Screener v5.2 (Cloud-friendly)
+
 import os
 import math
 import time
 import json
+from datetime import datetime, timedelta, timezone
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 import numpy as np
 import pandas as pd
 import requests
 import streamlit as st
-from datetime import datetime, timedelta, timezone
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-st.set_page_config(page_title="IDX Power Screener v5.2 – Chef Edition", page_icon="🚀", layout="wide")
+# =============== BASIC CONFIG ===============
+st.set_page_config(
+    page_title="IDX Power Screener v5.2 – Chef Edition",
+    page_icon="🚀",
+    layout="wide",
+)
 
-# -------------------- CONSTANTS & UTILS --------------------
+# =============== CONSTANTS & UTILS ===============
 IDX_TICKS = [
     (0, 200, 1),
     (200, 500, 2),
@@ -23,6 +30,7 @@ IDX_TICKS = [
     (2000, 5000, 10),
     (5000, float("inf"), 25),
 ]
+
 
 def round_to_tick(price: float, mode: str = "nearest") -> int:
     if price is None or not (price == price) or price <= 0:
@@ -38,9 +46,11 @@ def round_to_tick(price: float, mode: str = "nearest") -> int:
         return int(math.ceil(price / tick) * tick)
     return int(round(price / tick) * tick)
 
+
 def normalize_ticker(t: str) -> str:
     t = t.strip().upper()
     return t if t.endswith(".JK") else f"{t}.JK"
+
 
 def format_idr(x: float) -> str:
     try:
@@ -48,50 +58,65 @@ def format_idr(x: float) -> str:
     except Exception:
         return "-"
 
+
 def get_jakarta_time() -> datetime:
     return datetime.now(timezone(timedelta(hours=7)))
 
-# -------------------- SESSION STATE --------------------
-for k, v in [
-    ("last_scan_results", None),
-    ("last_scan_time", None),
-    ("last_scan_strategy", None),
-    ("scan_count", 0),
-]:
+
+# =============== SESSION STATE DEFAULTS ===============
+defaults = {
+    "last_scan_results": None,
+    "last_scan_time": None,
+    "last_scan_strategy": None,
+    "scan_count": 0,
+    "min_price_filter": 50,
+    "min_vol_filter": 500_000,
+    "min_turnover_filter": 100_000_000,
+    "account_size": 10_000_000,
+    "risk_pct": 1.0,
+}
+for k, v in defaults.items():
     if k not in st.session_state:
         st.session_state[k] = v
 
-# Default liquidity filters
-if "min_price_filter" not in st.session_state:
-    st.session_state["min_price_filter"] = 50
-if "min_vol_filter" not in st.session_state:
-    st.session_state["min_vol_filter"] = 500_000
-if "min_turnover_filter" not in st.session_state:
-    st.session_state["min_turnover_filter"] = 100_000_000
+# =============== IHSG WIDGET (Yahoo API langsung) ===============
 
-# Default risk management
-if "account_size" not in st.session_state:
-    st.session_state["account_size"] = 10_000_000
-if "risk_pct" not in st.session_state:
-    st.session_state["risk_pct"] = 1.0
 
-# -------------------- IHSG WIDGET --------------------
 @st.cache_data(ttl=180)
 def fetch_ihsg_data():
+    """Ambil data IHSG (^JKSE) via Yahoo chart API dengan timeout pendek."""
     try:
-        import yfinance as yf
-        ihsg = yf.Ticker("^JKSE")
-        hist = ihsg.history(period="1d", interval="1d", auto_adjust=False)
-        if hist.empty:
+        end = int(datetime.now().timestamp())
+        start = end - 3 * 86400  # 3 hari cukup
+
+        url = "https://query1.finance.yahoo.com/v8/finance/chart/%5EJKSE"
+        params = {"period1": start, "period2": end, "interval": "1d"}
+        headers = {"User-Agent": "Mozilla/5.0"}
+
+        resp = requests.get(url, params=params, headers=headers, timeout=10)
+        if resp.status_code != 200:
             return None
-        current = float(hist["Close"].iloc[-1])
-        open_price = float(hist["Open"].iloc[-1])
-        high = float(hist["High"].iloc[-1])
-        low = float(hist["Low"].iloc[-1])
-        change = current - open_price
+
+        data = resp.json()
+        result = data.get("chart", {}).get("result", [None])[0]
+        if not result:
+            return None
+
+        q = result["indicators"]["quote"][0]
+        ts = result.get("timestamp", [])
+        if not ts:
+            return None
+
+        close = float(q["close"][-1])
+        open_price = float(q["open"][-1])
+        high = float(q["high"][-1])
+        low = float(q["low"][-1])
+
+        change = close - open_price
         change_pct = (change / open_price) * 100 if open_price else 0.0
+
         return {
-            "price": current,
+            "price": close,
             "change": change,
             "change_pct": change_pct,
             "high": high,
@@ -100,6 +125,7 @@ def fetch_ihsg_data():
         }
     except Exception:
         return None
+
 
 def display_ihsg_widget():
     ihsg = fetch_ihsg_data()
@@ -153,7 +179,7 @@ def display_ihsg_widget():
         <p style='margin:3px 0;color:#fbbf24;font-size:0.9em;'> {condition} </p>
         <p style='margin:3px 0;color:#a5b4fc;font-size:0.85em;'> {guidance} </p>
         <p style='margin:5px 0 0 0;color:#94a3b8;font-size:0.75em;'>
-          ⏰ Last update: {now_jkt} WIB | 🔄 Yahoo data may be delayed (bukan tick-by-tick)
+          ⏰ Last update: {now_jkt} WIB | 🔄 Yahoo data may be delayed
         </p>
       </div>
     </div>
@@ -161,9 +187,11 @@ def display_ihsg_widget():
         unsafe_allow_html=True,
     )
 
-# -------------------- TICKERS --------------------
+# =============== TICKERS ===============
+
+
 @st.cache_data(ttl=3600)
-def load_tickers() -> list[str]:
+def load_tickers():
     try:
         if os.path.exists("idx_stocks.json"):
             with open("idx_stocks.json", "r") as f:
@@ -171,19 +199,18 @@ def load_tickers() -> list[str]:
             return [normalize_ticker(t) for t in data.get("tickers", []) if t]
     except Exception:
         pass
-    # fallback minimal
     return ["BBRI.JK", "BBCA.JK", "TLKM.JK", "ASII.JK", "ICBP.JK", "INDF.JK"]
 
-# -------------------- FETCH & INDICATORS --------------------
-def _yahoo_chart_json(ticker: str, period: str) -> dict | None:
+
+# =============== FETCH DATA (Yahoo API langsung) ===============
+
+def _yahoo_chart_json(ticker: str, period: str):
     end = int(datetime.now().timestamp())
     days = {"5d": 5, "1mo": 30, "3mo": 90, "6mo": 180, "1y": 365}.get(period, 180)
-    start = end - (days * 86400)
-
+    start = end - days * 86400
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
     params = {"period1": start, "period2": end, "interval": "1d"}
     headers = {"User-Agent": "Mozilla/5.0"}
-
     data = None
     for i in range(3):
         try:
@@ -196,20 +223,19 @@ def _yahoo_chart_json(ticker: str, period: str) -> dict | None:
         time.sleep(0.5 * (i + 1))
     return data
 
+
 @st.cache_data(ttl=60, show_spinner=False)
-def fetch_data(ticker: str, period: str = "6mo") -> pd.DataFrame | None:
+def fetch_data(ticker: str, period: str = "6mo"):
     try:
         data = _yahoo_chart_json(ticker, period)
         if not data:
             return None
-
         result = data.get("chart", {}).get("result", [None])[0]
         if not result:
             return None
 
         q = result["indicators"]["quote"][0]
         ts = result.get("timestamp", [])
-
         if not ts or len(ts) != len(q["close"]):
             return None
 
@@ -227,13 +253,11 @@ def fetch_data(ticker: str, period: str = "6mo") -> pd.DataFrame | None:
         if len(df) < 50:
             return None
 
-        # EMAs
         df["EMA9"] = df["Close"].ewm(span=9, adjust=False).mean()
         df["EMA21"] = df["Close"].ewm(span=21, adjust=False).mean()
         df["EMA50"] = df["Close"].ewm(span=50, adjust=False).mean()
         df["EMA200"] = df["Close"].ewm(span=min(len(df), 200), adjust=False).mean()
 
-        # RSI 14
         delta = df["Close"].diff()
         gain = delta.clip(lower=0)
         loss = -delta.clip(upper=0)
@@ -242,17 +266,14 @@ def fetch_data(ticker: str, period: str = "6mo") -> pd.DataFrame | None:
         rs = avg_gain / avg_loss
         df["RSI"] = 100 - (100 / (1 + rs))
 
-        # Volume metrics
         df["VOL_SMA20"] = df["Volume"].rolling(20).mean()
         df["VOL_SMA50"] = df["Volume"].rolling(50).mean()
         df["VOL_RATIO"] = df["Volume"] / df["VOL_SMA20"].replace(0, np.nan)
 
-        # Momentum
         df["MOM_5D"] = df["Close"].pct_change(5) * 100
         df["MOM_10D"] = df["Close"].pct_change(10) * 100
         df["MOM_20D"] = df["Close"].pct_change(20) * 100
 
-        # OBV
         obv = [0]
         for i in range(1, len(df)):
             if df["Close"].iloc[i] > df["Close"].iloc[i - 1]:
@@ -264,20 +285,17 @@ def fetch_data(ticker: str, period: str = "6mo") -> pd.DataFrame | None:
         df["OBV"] = obv
         df["OBV_EMA"] = pd.Series(df["OBV"]).ewm(span=10, adjust=False).mean()
 
-        # Bollinger Bands
         df["BB_MID"] = df["Close"].rolling(20).mean()
         df["BB_STD"] = df["Close"].rolling(20).std()
         df["BB_UPPER"] = df["BB_MID"] + 2 * df["BB_STD"]
         df["BB_LOWER"] = df["BB_MID"] - 2 * df["BB_STD"]
         df["BB_WIDTH"] = ((df["BB_UPPER"] - df["BB_LOWER"]) / df["BB_MID"]) * 100
 
-        # Stochastic
         low14 = df["Low"].rolling(14).min()
         high14 = df["High"].rolling(14).max()
         df["STOCH_K"] = 100 * (df["Close"] - low14) / (high14 - low14)
         df["STOCH_D"] = df["STOCH_K"].rolling(3).mean()
 
-        # ATR
         tr1 = df["High"] - df["Low"]
         tr2 = (df["High"] - df["Close"].shift()).abs()
         tr3 = (df["Low"] - df["Close"].shift()).abs()
@@ -285,14 +303,12 @@ def fetch_data(ticker: str, period: str = "6mo") -> pd.DataFrame | None:
         df["ATR"] = tr.rolling(14).mean()
         df["ATR_PCT"] = (df["ATR"] / df["Close"]) * 100
 
-        # MACD
         ema12 = df["Close"].ewm(span=12, adjust=False).mean()
         ema26 = df["Close"].ewm(span=26, adjust=False).mean()
         df["MACD"] = ema12 - ema26
         df["MACD_SIGNAL"] = df["MACD"].ewm(span=9, adjust=False).mean()
         df["MACD_HIST"] = df["MACD"] - df["MACD_SIGNAL"]
 
-        # EXTRA untuk Bandarology: bentuk candle & posisi
         df["BODY"] = (df["Close"] - df["Open"]).abs()
         df["RANGE"] = (df["High"] - df["Low"]).replace(0, np.nan)
         df["BODY_RATIO"] = df["BODY"] / df["RANGE"]
@@ -302,7 +318,9 @@ def fetch_data(ticker: str, period: str = "6mo") -> pd.DataFrame | None:
     except Exception:
         return None
 
-# -------------------- CHARTS --------------------
+
+# =============== CHARTS ===============
+
 def create_chart(df: pd.DataFrame, ticker: str, period_days: int = 60):
     try:
         d = df.tail(period_days).copy()
@@ -375,15 +393,9 @@ def create_chart(df: pd.DataFrame, ticker: str, period_days: int = 60):
             row=3,
             col=1,
         )
-        fig.add_hline(
-            y=70, line_dash="dash", line_color="red", opacity=0.5, row=3, col=1
-        )
-        fig.add_hline(
-            y=30, line_dash="dash", line_color="green", opacity=0.5, row=3, col=1
-        )
-        fig.add_hline(
-            y=50, line_dash="dot", line_color="gray", opacity=0.3, row=3, col=1
-        )
+        fig.add_hline(y=70, line_dash="dash", line_color="red", opacity=0.5, row=3, col=1)
+        fig.add_hline(y=30, line_dash="dash", line_color="green", opacity=0.5, row=3, col=1)
+        fig.add_hline(y=50, line_dash="dot", line_color="gray", opacity=0.3, row=3, col=1)
 
         fig.update_layout(
             height=700,
@@ -392,11 +404,7 @@ def create_chart(df: pd.DataFrame, ticker: str, period_days: int = 60):
             hovermode="x unified",
             template="plotly_dark",
             legend=dict(
-                orientation="h",
-                yanchor="bottom",
-                y=1.02,
-                xanchor="right",
-                x=1,
+                orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1
             ),
         )
         fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor="#333")
@@ -405,19 +413,18 @@ def create_chart(df: pd.DataFrame, ticker: str, period_days: int = 60):
     except Exception:
         return None
 
-# -------------------- FILTERS & SCORING HELPERS --------------------
+
+# =============== FILTER & GRADING HELPERS ===============
+
 def apply_liquidity_filter(df: pd.DataFrame):
-    """
-    Filter likuiditas global – threshold diatur dari sidebar.
-    """
     try:
         r = df.iloc[-1]
         price = float(r["Close"])
         vol_avg = float(df["Volume"].tail(20).mean())
 
-        min_price = st.session_state.get("min_price_filter", 50)
-        min_vol = st.session_state.get("min_vol_filter", 500_000)
-        min_turnover = st.session_state.get("min_turnover_filter", 100_000_000)
+        min_price = st.session_state["min_price_filter"]
+        min_vol = st.session_state["min_vol_filter"]
+        min_turnover = st.session_state["min_turnover_filter"]
 
         if price < min_price:
             return False, f"Price < {min_price}"
@@ -428,6 +435,7 @@ def apply_liquidity_filter(df: pd.DataFrame):
         return True, "Passed"
     except Exception as e:
         return False, f"Error {e}"
+
 
 def ema_alignment_score(r: pd.Series):
     pts = (
@@ -445,6 +453,7 @@ def ema_alignment_score(r: pd.Series):
     }[pts]
     return pts, label
 
+
 def grade_from_score(score: int):
     if score >= 85:
         return "A+", 85
@@ -458,7 +467,9 @@ def grade_from_score(score: int):
         return "C", 45
     return "D", max(score, 0)
 
-# -------------------- STRATEGY SCORING --------------------
+
+# =============== STRATEGY SCORING ===============
+
 def score_general(df: pd.DataFrame):
     try:
         ok, reason = apply_liquidity_filter(df)
@@ -468,9 +479,7 @@ def score_general(df: pd.DataFrame):
         r = df.iloc[-1]
         if r["Close"] < r["EMA50"]:
             return 0, {"Rejected": "Below EMA50"}, 0, "F"
-        if (
-            r["Close"] < r["EMA21"] < r["EMA50"] < r["EMA200"]
-        ):
+        if r["Close"] < r["EMA21"] < r["EMA50"] < r["EMA200"]:
             return 0, {"Rejected": "Strong downtrend"}, 0, "F"
 
         score, details = 0, {}
@@ -543,6 +552,7 @@ def score_general(df: pd.DataFrame):
     except Exception as e:
         return 0, {"Error": str(e)}, 0, "F"
 
+
 def score_bpjs(df: pd.DataFrame):
     try:
         ok, reason = apply_liquidity_filter(df)
@@ -597,6 +607,7 @@ def score_bpjs(df: pd.DataFrame):
     except Exception as e:
         return 0, {"Error": str(e)}, 0, "F"
 
+
 def score_bsjp(df: pd.DataFrame):
     try:
         ok, reason = apply_liquidity_filter(df)
@@ -638,11 +649,8 @@ def score_bsjp(df: pd.DataFrame):
     except Exception as e:
         return 0, {"Error": str(e)}, 0, "F"
 
+
 def score_bandar(df: pd.DataFrame):
-    """
-    Fokus: deteksi aktivitas Bandar lewat volume anomali + candle structure.
-    Output juga mengisi details['BandarPattern'].
-    """
     try:
         ok, reason = apply_liquidity_filter(df)
         if not ok:
@@ -655,13 +663,11 @@ def score_bandar(df: pd.DataFrame):
         body_ratio = float(r.get("BODY_RATIO", np.nan))
         pos = float(r.get("POS_IN_RANGE", np.nan))
 
-        # Buang saham yang benar-benar tidak aktif
         if relvol < 1.3:
             return 0, {"Rejected": f"Volume not active ({relvol:.1f}x avg)"}, 0, "F"
 
         pattern = "-"
         if not np.isnan(body_ratio) and not np.isnan(pos):
-            # Bandar Masuk (Akumulasi)
             if (
                 relvol >= 2.0
                 and body_ratio <= 0.6
@@ -669,7 +675,6 @@ def score_bandar(df: pd.DataFrame):
                 and r["Close"] >= r["Open"]
             ):
                 pattern = "Bandar Masuk (Akumulasi)"
-            # Bandar Keluar (Distribusi)
             elif (
                 relvol >= 2.0
                 and body_ratio <= 0.6
@@ -678,7 +683,6 @@ def score_bandar(df: pd.DataFrame):
             ):
                 pattern = "Bandar Keluar (Distribusi)"
 
-        # Trend untuk tandai akumulasi yang masih downtrend
         trend_local = detect_trend(r)
         if "Masuk" in pattern:
             if trend_local == "Downtrend" or r["Close"] < r["EMA50"]:
@@ -691,32 +695,29 @@ def score_bandar(df: pd.DataFrame):
             details["PosInRange"] = f"{pos:.2f}"
         details["BandarPattern"] = pattern
 
-        # Skor dasar dari RelVol (0–60)
-        score += min(relvol, 5.0) * 12  # 5x avg = 60 pts
+        score += min(relvol, 5.0) * 12  # max 60
 
-        # Trend / EMA alignment (0–20)
         pts, label = ema_alignment_score(r)
         score += {4: 20, 3: 12, 2: 5}.get(pts, 0)
         details["Trend"] = label
 
-        # OBV vs OBV-EMA (0–10)
         if r["OBV"] > r["OBV_EMA"]:
             score += 10
             details["OBV"] = "🟢 OBV > OBV-EMA"
         else:
             details["OBV"] = "🟠 OBV <= OBV-EMA"
 
-        # Pattern bonus (0–10)
         if "Masuk" in pattern:
             score += 10
         elif "Keluar" in pattern:
-            score += 5  # tetap tampil, tapi penggunaannya beda
+            score += 5
 
         score = int(min(score, 100))
         grade, conf = grade_from_score(score)
         return score, details, conf, grade
     except Exception as e:
         return 0, {"Error": str(e)}, 0, "F"
+
 
 def score_swing(df: pd.DataFrame):
     try:
@@ -760,6 +761,7 @@ def score_swing(df: pd.DataFrame):
         return score, details, conf, grade
     except Exception as e:
         return 0, {"Error": str(e)}, 0, "F"
+
 
 def score_value(df: pd.DataFrame):
     try:
@@ -808,7 +810,9 @@ def score_value(df: pd.DataFrame):
     except Exception as e:
         return 0, {"Error": str(e)}, 0, "F"
 
-# -------------------- TREND, SIGNAL, TRADE PLAN --------------------
+
+# =============== TREND, SIGNAL, TRADE PLAN ===============
+
 def detect_trend(r: pd.Series) -> str:
     price, ema9, ema21, ema50, ema200 = map(
         float, [r["Close"], r["EMA9"], r["EMA21"], r["EMA50"], r["EMA200"]]
@@ -820,6 +824,7 @@ def detect_trend(r: pd.Series) -> str:
     if abs(price - ema50) / price < 0.03:
         return "Sideways"
     return "Downtrend"
+
 
 def classify_signal(r: pd.Series, score: int, grade: str, trend: str) -> str:
     rsi = float(r["RSI"]) if r.get("RSI") == r.get("RSI") else 50.0
@@ -843,16 +848,12 @@ def classify_signal(r: pd.Series, score: int, grade: str, trend: str) -> str:
         and 40 <= rsi <= 75
     ):
         return "Buy"
-    if trend in ["Strong Uptrend", "Uptrend"] and grade in [
-        "A+",
-        "A",
-        "B+",
-        "B",
-    ]:
+    if trend in ["Strong Uptrend", "Uptrend"] and grade in ["A+", "A", "B+", "B"]:
         return "Hold"
     if trend == "Sideways" and grade in ["B+", "B", "C"]:
         return "Hold"
     return "Sell"
+
 
 def compute_trade_plan(df: pd.DataFrame, strategy: str, trend: str) -> dict:
     r = df.iloc[-1]
@@ -895,14 +896,15 @@ def compute_trade_plan(df: pd.DataFrame, strategy: str, trend: str) -> dict:
         "sl": sl,
     }
 
-# -------------------- ORCHESTRATION --------------------
-def analyze_ticker(ticker: str, strategy: str, period: str) -> dict | None:
+
+# =============== ORCHESTRATION ===============
+
+def analyze_ticker(ticker: str, strategy: str, period: str):
     df = fetch_data(ticker, period)
     if df is None or df.empty:
         return None
 
     r = df.iloc[-1]
-
     if strategy == "BPJS":
         score, details, conf, grade = score_bpjs(df)
     elif strategy == "BSJP":
@@ -916,14 +918,12 @@ def analyze_ticker(ticker: str, strategy: str, period: str) -> dict | None:
     else:
         score, details, conf, grade = score_general(df)
 
-    # Buang grade D
     if grade not in ["A+", "A", "B+", "B", "C"]:
         return None
 
     trend = detect_trend(r)
     signal = classify_signal(r, score, grade, trend)
 
-    # Khusus strategi Bandar → Signal pakai pola BandarPattern
     if strategy == "Bandar" and "BandarPattern" in details:
         signal = details["BandarPattern"]
 
@@ -946,24 +946,24 @@ def analyze_ticker(ticker: str, strategy: str, period: str) -> dict | None:
     }
     if plan["tp3"]:
         res["TP3"] = plan["tp3"]
-
-    # Tambah kolom khusus Bandar
     if strategy == "Bandar":
         res["BandarMode"] = details.get("BandarPattern", "-")
-
     return res
 
-# -------------------- SESSION & SCAN --------------------
-def save_scan_to_session(df2: pd.DataFrame, df1: pd.DataFrame, strategy: str):
-    st.session_state.last_scan_results = (df2, df1)
-    st.session_state.last_scan_time = datetime.now()
-    st.session_state.last_scan_strategy = strategy
-    st.session_state.scan_count = (st.session_state.scan_count or 0) + 1
 
-def display_last_scan_info() -> bool:
-    if st.session_state.last_scan_results:
-        df2, _ = st.session_state.last_scan_results
-        mins = int((datetime.now() - st.session_state.last_scan_time).total_seconds() / 60)
+def save_scan_to_session(df2: pd.DataFrame, df1: pd.DataFrame, strategy: str):
+    st.session_state["last_scan_results"] = (df2, df1)
+    st.session_state["last_scan_time"] = datetime.now()
+    st.session_state["last_scan_strategy"] = strategy
+    st.session_state["scan_count"] = (st.session_state["scan_count"] or 0) + 1
+
+
+def display_last_scan_info():
+    if st.session_state["last_scan_results"]:
+        df2, _ = st.session_state["last_scan_results"]
+        mins = int(
+            (datetime.now() - st.session_state["last_scan_time"]).total_seconds() / 60
+        )
         st.markdown(
             f"""
         <div style='background:linear-gradient(135deg,#064e3b 0%,#065f46 100%);
@@ -971,16 +971,15 @@ def display_last_scan_info() -> bool:
                     border-left:4px solid #10b981;'>
           <p style='margin:0;color:white;font-weight:bold;'>📂 LAST SCAN RESULTS</p>
           <p style='margin:5px 0 0 0;color:#d1fae5;font-size:0.9em;'>
-            Strategy: {st.session_state.last_scan_strategy} |
-            Time: {st.session_state.last_scan_time.strftime('%H:%M:%S')}
+            Strategy: {st.session_state['last_scan_strategy']} |
+            Time: {st.session_state['last_scan_time'].strftime('%H:%M:%S')}
             ({mins} min ago) | Found: {len(df2)} elite stocks
           </p>
         </div>
         """,
             unsafe_allow_html=True,
         )
-        return True
-    return False
+
 
 def create_csv_download(df: pd.DataFrame, strategy: str):
     if df is None or df.empty:
@@ -995,14 +994,16 @@ def create_csv_download(df: pd.DataFrame, strategy: str):
         mime="text/csv",
     )
 
+
 def process_ticker(t: str, strategy: str, period: str):
     try:
         return analyze_ticker(t, strategy, period)
     except Exception:
         return None
 
+
 def scan_stocks(
-    tickers: list[str],
+    tickers,
     strategy: str,
     period: str,
     limit1: int,
@@ -1015,7 +1016,8 @@ def scan_stocks(
     progress = st.progress(0)
     status = st.empty()
 
-    with ThreadPoolExecutor(max_workers=10) as ex:
+    # Cloud-friendly: max_workers kecil
+    with ThreadPoolExecutor(max_workers=6) as ex:
         futures = {ex.submit(process_ticker, t, strategy, period): t for t in tickers}
         done = 0
         for fut in as_completed(futures):
@@ -1025,7 +1027,7 @@ def scan_stocks(
             r = fut.result()
             if r:
                 results.append(r)
-            time.sleep(0.01)
+            time.sleep(0.005)
 
     progress.empty()
     status.empty()
@@ -1048,7 +1050,6 @@ def scan_stocks(
         f"(Avg score: {df1['Score'].mean():.0f})"
     )
 
-    # Stage 2: beda filter untuk strategi Bandar vs lainnya
     if strategy == "Bandar":
         df2 = df1.copy()
         mask_masuk = df2["Signal"].astype(str).str.contains("Masuk", case=False, na=False)
@@ -1071,7 +1072,6 @@ def scan_stocks(
         f"(Avg conf: {df2['Confidence'].mean():.0f}%)"
     )
 
-    # Summary kecil
     if strategy == "Bandar":
         masuk = df2["Signal"].astype(str).str.contains("Masuk", case=False, na=False).sum()
         keluar = df2["Signal"].astype(str).str.contains("Keluar", case=False, na=False).sum()
@@ -1085,7 +1085,9 @@ def scan_stocks(
     save_scan_to_session(df2, df1, strategy)
     return df1, df2
 
-# -------------------- UI HELPERS --------------------
+
+# =============== UI HELPERS ===============
+
 def style_table(df: pd.DataFrame):
     def row_style(row):
         color = ""
@@ -1093,16 +1095,17 @@ def style_table(df: pd.DataFrame):
         bandar = str(row.get("BandarMode", ""))
 
         if "Masuk" in signal or "Masuk" in bandar:
-            color = "background-color: rgba(37, 99, 235, 0.18);"  # biru muda
+            color = "background-color: rgba(37, 99, 235, 0.18);"  # biru
         elif "Keluar" in signal or "Keluar" in bandar:
-            color = "background-color: rgba(220, 38, 38, 0.18);"  # merah muda
+            color = "background-color: rgba(220, 38, 38, 0.18);"  # merah
         elif signal == "Strong Buy":
             color = "background-color: rgba(22, 163, 74, 0.18);"  # hijau
         elif signal == "Buy":
-            color = "background-color: rgba(132, 204, 22, 0.15);"  # hijau muda
+            color = "background-color: rgba(132, 204, 22, 0.15);"
         return [color] * len(row)
 
     return df.style.apply(row_style, axis=1)
+
 
 def show_table(df: pd.DataFrame, title: str):
     if df is None or df.empty:
@@ -1139,8 +1142,8 @@ def show_table(df: pd.DataFrame, title: str):
     )
     create_csv_download(show[order], title.replace(" ", "_"))
 
-    account_size = st.session_state.get("account_size", 0)
-    risk_pct = st.session_state.get("risk_pct", 1.0)
+    account_size = st.session_state["account_size"]
+    risk_pct = st.session_state["risk_pct"]
 
     with st.expander("🔎 Detail per saham + Position Size"):
         for _, row in show.iterrows():
@@ -1161,7 +1164,6 @@ def show_table(df: pd.DataFrame, title: str):
                 f"{tp3} | SL {format_idr(row['SL'])}"
             )
 
-            # Position sizing
             if (
                 account_size > 0
                 and row["Entry"] > 0
@@ -1184,9 +1186,13 @@ def show_table(df: pd.DataFrame, title: str):
                 st.write({k: str(v) for k, v in details.items()})
             st.markdown("---")
 
-# -------------------- MAIN UI --------------------
+
+# =============== MAIN UI ===============
+
 st.title("🚀 IDX Power Screener v5.2 – Chef Edition")
-st.caption("BPJS / BSJP / Bandar / Swing / Value + IHSG + Session + Tick-size + Bandarology + Risk Mgmt")
+st.caption(
+    "BPJS / BSJP / Bandar / Swing / Value + IHSG + Tick-size + Bandarology + Risk Mgmt"
+)
 
 display_ihsg_widget()
 tickers = load_tickers()
@@ -1219,8 +1225,11 @@ with st.sidebar:
             "Min Price (IDR)", min_value=50, max_value=5000, value=50, step=25
         )
         min_vol = st.number_input(
-            "Min Avg Volume 20D", min_value=0, max_value=20_000_000,
-            value=500_000, step=100_000
+            "Min Avg Volume 20D",
+            min_value=0,
+            max_value=20_000_000,
+            value=500_000,
+            step=100_000,
         )
         min_turnover = st.number_input(
             "Min Turnover (Price x Vol)",
@@ -1249,30 +1258,32 @@ with st.sidebar:
         )
         run_scan = st.button("🚀 RUN SCAN", type="primary", use_container_width=True)
 
-    # Risk management (dipakai untuk scan & single)
     st.markdown("### 💰 Risk Management")
     account_size = st.number_input(
-        "Account size (Rp)", min_value=0, max_value=5_000_000_000,
-        value=int(st.session_state.get("account_size", 10_000_000)),
+        "Account size (Rp)",
+        min_value=0,
+        max_value=5_000_000_000,
+        value=int(st.session_state["account_size"]),
         step=1_000_000,
     )
     risk_pct = st.slider(
-        "Risk per trade (%)", 0.1, 5.0, float(st.session_state.get("risk_pct", 1.0)), 0.1
+        "Risk per trade (%)", 0.1, 5.0, float(st.session_state["risk_pct"]), 0.1
     )
     st.session_state["account_size"] = float(account_size)
     st.session_state["risk_pct"] = float(risk_pct)
 
-    st.caption("v5.2 – Stronger filters, Bandar pattern, risk mgmt, still educational only")
+    st.caption(
+        "v5.2 – Strong filters, Bandar pattern, risk mgmt – educational only, not advice."
+    )
 
 display_last_scan_info()
 
-# -------------------- ROUTING --------------------
+# =============== ROUTING ===============
+
 if "Single Stock" in menu:
     st.markdown("### 🔍 Single Stock Analysis")
     default_symbol = tickers[0].replace(".JK", "") if tickers else "BBRI"
-    selected = st.text_input(
-        "Symbol (tanpa .JK)", value=default_symbol
-    ).strip().upper()
+    selected = st.text_input("Symbol (tanpa .JK)", value=default_symbol).strip().upper()
     strategy_single = st.selectbox(
         "Strategy", ["General", "BPJS", "BSJP", "Bandar", "Swing", "Value"]
     )
@@ -1328,9 +1339,8 @@ if "Single Stock" in menu:
                         f"• **Stop Loss:** {format_idr(res['SL'])}"
                     )
 
-                    # Position sizing single stock
-                    account_size = st.session_state.get("account_size", 0)
-                    risk_pct = st.session_state.get("risk_pct", 1.0)
+                    account_size = st.session_state["account_size"]
+                    risk_pct = st.session_state["risk_pct"]
                     if (
                         account_size > 0
                         and res["Entry"] > 0
@@ -1400,6 +1410,6 @@ else:
 
 st.markdown("---")
 st.caption(
-    "🚀 IDX Power Screener v5.2 | Educational only | Tick-size aware | Bandar pattern "
-    "| Risk-based position sizing | Data from Yahoo (may be delayed)."
+    "🚀 IDX Power Screener v5.2 | Educational only | Tick-size aware | Bandar pattern | "
+    "Risk-based position sizing | Data from Yahoo (may be delayed)."
 )
