@@ -324,7 +324,7 @@ def create_chart(df: pd.DataFrame, ticker: str, period_days: int = 60):
             "EMA9": "#2196F3",
             "EMA21": "#FF9800",
             "EMA50": "#F44336",
-            "EMA200": "#9E9E9E",
+            "EMA200": "#9E9E3E",
         }
         for ema in ["EMA9", "EMA21", "EMA50", "EMA200"]:
             if ema in d.columns:
@@ -333,7 +333,7 @@ def create_chart(df: pd.DataFrame, ticker: str, period_days: int = 60):
                         x=d.index,
                         y=d[ema],
                         name=ema,
-                        line=dict(color=colors[ema], width=1.5),
+                        line=dict(color=colors.get(ema, "#FFFFFF"), width=1.5),
                     ),
                     row=1,
                     col=1,
@@ -398,10 +398,10 @@ def create_chart(df: pd.DataFrame, ticker: str, period_days: int = 60):
 # -------------------- SCORING HELPERS --------------------
 def ema_alignment_score(r: pd.Series):
     pts = (
-        int(r["EMA9"] > r["EMA21"])
-        + int(r["EMA21"] > r["EMA50"])
-        + int(r["EMA50"] > r["EMA200"])
-        + int(r["Close"] > r["EMA9"])
+        int(r["EMA9"] > r["EMA21"]) +
+        int(r["EMA21"] > r["EMA50"]) +
+        int(r["EMA50"] > r["EMA200"]) +
+        int(r["Close"] > r["EMA9"])
     )
     label = {
         4: "🟢 Perfect",
@@ -444,7 +444,7 @@ def apply_liquidity_filter(df: pd.DataFrame, mode: str = "default"):
         turnover = price * vol20
         active_days = int((df["Volume"].tail(20) > 0).sum())
 
-        # base threshold (cukup ketat tapi masih realistis)
+        # base threshold
         min_price = 50
         min_vol20 = 500_000
         min_turnover = 50_000_000
@@ -480,18 +480,15 @@ def score_general(df: pd.DataFrame):
             return 0, {"Rejected": reason}, 0, "F"
         r = df.iloc[-1]
 
-        # Wajib di atas EMA50 (uptrend sehat)
         if r["Close"] < r["EMA50"]:
             return 0, {"Rejected": "Below EMA50 (down/side)"}, 0, "F"
 
         score, details = 0, {}
 
-        # Trend
         pts, label = ema_alignment_score(r)
         score += {4: 45, 3: 30, 2: 15}.get(pts, 0)
         details["Trend"] = label
 
-        # Momentum 20 hari
         mom20 = float(r["MOM_20D"])
         if mom20 < -8:
             return 0, {"Rejected": f"Strong negative momentum ({mom20:.1f}%)"}, 0, "F"
@@ -507,7 +504,6 @@ def score_general(df: pd.DataFrame):
         else:
             details["MOM 20D"] = f"🟠 {mom20:.1f}%"
 
-        # RSI
         rsi = float(r["RSI"]) if not np.isnan(r["RSI"]) else 50.0
         if 50 <= rsi <= 65:
             score += 20
@@ -523,7 +519,6 @@ def score_general(df: pd.DataFrame):
         else:
             details["RSI"] = f"⚪ {rsi:.0f}"
 
-        # Volume vs rata-rata
         volr = float(r["VOL_RATIO"]) if not np.isnan(r["VOL_RATIO"]) else 1.0
         if volr > 2.0:
             score += 15
@@ -537,7 +532,6 @@ def score_general(df: pd.DataFrame):
         else:
             details["Volume"] = f"🟠 {volr:.1f}x"
 
-        # Momentum pendek
         m5 = float(r["MOM_5D"])
         m10 = float(r["MOM_10D"])
         if m5 > 3 and m10 > 5:
@@ -667,14 +661,12 @@ def score_bandar(df: pd.DataFrame):
         r = df.iloc[-1]
         score, details = 0, {}
 
-        # OBV relative to OBV-EMA
         if r["OBV"] > r["OBV_EMA"]:
             score += 30
             details["OBV"] = "🟢 Above OBV-EMA (accumulation)"
         else:
             details["OBV"] = "🟠 Below OBV-EMA"
 
-        # BB Squeeze
         width = float(r["BB_WIDTH"]) if not np.isnan(r["BB_WIDTH"]) else 0.0
         recent = df["BB_WIDTH"].tail(60).dropna()
         p25 = float(np.percentile(recent, 25)) if len(recent) else 0.0
@@ -682,7 +674,6 @@ def score_bandar(df: pd.DataFrame):
             score += 15
             details["BB Squeeze"] = f"🟢 {width:.2f}% (low volatility)"
 
-        # BB breakout
         if r["Close"] > r["BB_UPPER"]:
             score += 20
             details["BB Breakout"] = "🟢 Close > Upper band"
@@ -819,14 +810,12 @@ def score_gorilla(df: pd.DataFrame):
         r = df.iloc[-1]
         score, details = 0, {}
 
-        # Trend super kuat
         if r["Close"] > r["EMA9"] > r["EMA21"] > r["EMA50"]:
             score += 40
             details["Trend"] = "🦍 Gorilla Uptrend"
         else:
             return 0, {"Rejected": "Trend kurang kuat (butuh Close>EMA9>EMA21>EMA50)"}, 0, "F"
 
-        # Momentum
         m5 = float(r["MOM_5D"])
         m20 = float(r["MOM_20D"])
         if m5 > 7 and m20 > 15:
@@ -838,7 +827,6 @@ def score_gorilla(df: pd.DataFrame):
         else:
             return 0, {"Rejected": "Momentum kurang agresif"}, 0, "F"
 
-        # Volume
         volr = float(r["VOL_RATIO"]) if not np.isnan(r["VOL_RATIO"]) else 1.0
         if volr >= 3.0:
             score += 20
@@ -849,7 +837,6 @@ def score_gorilla(df: pd.DataFrame):
         else:
             return 0, {"Rejected": f"VOL_RATIO {volr:.1f}x < 2"}, 0, "F"
 
-        # ATR – cukup liar tapi tidak terlalu gila
         atr = float(r["ATR_PCT"]) if not np.isnan(r["ATR_PCT"]) else 0.0
         if 3.0 <= atr <= 10.0:
             score += 10
@@ -857,7 +844,6 @@ def score_gorilla(df: pd.DataFrame):
         else:
             details["ATR"] = f"⚪ {atr:.1f}%"
 
-        # RSI – kuat, tapi bukan euforia ekstrem
         rsi = float(r["RSI"]) if not np.isnan(r["RSI"]) else 55.0
         if 55 <= rsi <= 78:
             score += 10
@@ -891,7 +877,6 @@ def classify_signal(r: pd.Series, score: int, grade: str, trend: str) -> str:
     m5 = float(r["MOM_5D"]) if r.get("MOM_5D") == r.get("MOM_5D") else 0.0
     m20 = float(r["MOM_20D"]) if r.get("MOM_20D") == r.get("MOM_20D") else 0.0
 
-    # Strong Buy
     if (
         trend in ["Strong Uptrend", "Uptrend"]
         and grade in ["A+", "A"]
@@ -902,7 +887,6 @@ def classify_signal(r: pd.Series, score: int, grade: str, trend: str) -> str:
     ):
         return "Strong Buy"
 
-    # Buy
     if (
         trend in ["Strong Uptrend", "Uptrend"]
         and grade in ["A+", "A", "B+"]
@@ -911,7 +895,6 @@ def classify_signal(r: pd.Series, score: int, grade: str, trend: str) -> str:
     ):
         return "Buy"
 
-    # Hold
     if trend in ["Strong Uptrend", "Uptrend"] and grade in ["A+", "A", "B+", "B"]:
         return "Hold"
     if trend == "Sideways" and grade in ["B+", "B", "C"]:
@@ -1044,7 +1027,8 @@ def display_last_scan_info() -> bool:
         return True
     return False
 
-def create_csv_download(df: pd.DataFrame, strategy_label: str):
+# 🔧 FIX: kasih key unik per tombol download
+def create_csv_download(df: pd.DataFrame, strategy_label: str, button_key: str):
     if df is None or df.empty:
         return
     export = df.drop(columns=["Details"], errors="ignore").copy()
@@ -1055,6 +1039,7 @@ def create_csv_download(df: pd.DataFrame, strategy_label: str):
         data=csv,
         file_name=f"IDX_{strategy_label}_scan_{ts}.csv",
         mime="text/csv",
+        key=button_key,
     )
 
 def process_ticker(t: str, strategy: str, period: str):
@@ -1133,7 +1118,12 @@ def show_table(df: pd.DataFrame, title: str, strategy_label: str):
         if c in show.columns
     ]
     st.dataframe(show[order], use_container_width=True, hide_index=True)
-    create_csv_download(show[order], strategy_label)
+    # 🔑 key unik per kombinasi stage + strategi
+    create_csv_download(
+        show[order],
+        strategy_label,
+        button_key=f"download_{strategy_label}_{title.replace(' ', '_')}",
+    )
 
     with st.expander("🔎 Detail per saham"):
         for _, row in show.iterrows():
@@ -1205,7 +1195,6 @@ with st.sidebar:
 display_last_scan_info()
 
 # ================== ROUTING ==================
-# Single Stock
 if "Single Stock" in menu:
     st.markdown("### 🔍 Single Stock Analysis")
     default_symbol = tickers[0].replace(".JK", "") if tickers else "BBRI"
@@ -1270,8 +1259,6 @@ if "Single Stock" in menu:
                     st.markdown("**Technical Notes:**")
                     for k, v in res["Details"].items():
                         st.caption(f"• **{k}**: {v}")
-
-# Scan modes
 else:
     strategy_map = {
         "⚡ SPEED Trader (1-2d)": "General",
