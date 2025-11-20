@@ -16,7 +16,7 @@ from plotly.subplots import make_subplots
 # CONFIG
 # =========================================================
 st.set_page_config(
-    page_title="IDX Power Screener – Main",
+    page_title="IDX Power Screener – Fixed Rules",
     page_icon="🚀",
     layout="wide"
 )
@@ -31,6 +31,17 @@ IDX_TICKS = [
     (2000, 5000, 10),
     (5000, float("inf"), 25),
 ]
+
+# LIQUIDITY CONFIG PER STRATEGY (perhitungan pasti)
+LIQ_CONFIG = {
+    "General":  (50, 150_000, 100_000_000),
+    "Swing":    (50, 150_000, 100_000_000),
+    "BPJS":     (50, 200_000, 150_000_000),
+    "BSJP":     (50, 200_000, 150_000_000),
+    "Value":    (50, 100_000,  80_000_000),
+    "Bandar":   (50, 150_000, 120_000_000),
+    "Gorilla":  (50, 250_000, 150_000_000),
+}
 
 def round_to_tick(price: float, mode: str = "nearest") -> int:
     if price is None or not (price == price) or price <= 0:
@@ -60,18 +71,6 @@ def get_jakarta_time() -> datetime:
     return datetime.now(timezone(timedelta(hours=7)))
 
 # =========================================================
-# AUTO REFRESH (opsional)
-# =========================================================
-def inject_autorefresh(enable: bool, interval_sec: int):
-    if not enable:
-        return
-    interval_sec = max(5, int(interval_sec or 10))
-    st.markdown(
-        f"<meta http-equiv='refresh' content='{interval_sec}'>",
-        unsafe_allow_html=True,
-    )
-
-# =========================================================
 # SESSION STATE
 # =========================================================
 defaults = {
@@ -87,7 +86,7 @@ for k, v in defaults.items():
 # =========================================================
 # IHSG MARKET WIDGET
 # =========================================================
-@st.cache_data(ttl=180)
+@st.cache_data(ttl=15)  # refresh cepat (±15 detik)
 def fetch_ihsg_data():
     try:
         import yfinance as yf
@@ -174,7 +173,7 @@ def display_ihsg_widget():
           {guidance}
         </p>
         <p style='margin:5px 0 0 0;color:#94a3b8;font-size:0.75em;'>
-          ⏰ Last update: {datetime.now().strftime('%H:%M:%S')} WIB | 🔄 Auto-refresh available
+          ⏰ Last update: {datetime.now().strftime('%H:%M:%S')} WIB
         </p>
       </div>
     </div>
@@ -186,7 +185,7 @@ def display_ihsg_widget():
 # TICKERS
 # =========================================================
 @st.cache_data(ttl=3600)
-def load_tickers() -> list[str]:
+def load_tickers():
     try:
         if os.path.exists("idx_stocks.json"):
             with open("idx_stocks.json", "r") as f:
@@ -200,22 +199,13 @@ def load_tickers() -> list[str]:
 # =========================================================
 # FETCH DATA
 # =========================================================
-def _yahoo_chart_json(ticker: str, period: str) -> dict | None:
+def _yahoo_chart_json(ticker: str, period: str):
     end = int(datetime.now().timestamp())
-    days = {
-        "3mo": 90,
-        "6mo": 180,
-        "1y": 365,
-        "12mo": 365,
-    }.get(period, 180)
+    days = {"3mo": 90, "6mo": 180, "1y": 365}.get(period, 180)
     start = end - days * 86400
 
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
-    params = {
-        "period1": start,
-        "period2": end,
-        "interval": "1d",
-    }
+    params = {"period1": start, "period2": end, "interval": "1d"}
     headers = {"User-Agent": "Mozilla/5.0"}
 
     data = None
@@ -230,8 +220,8 @@ def _yahoo_chart_json(ticker: str, period: str) -> dict | None:
         time.sleep(0.5 * (i + 1))
     return data
 
-@st.cache_data(ttl=300, show_spinner=False)
-def fetch_data(ticker: str, period: str = "6mo") -> pd.DataFrame | None:
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_data(ticker: str, period: str = "6mo"):
     try:
         data = _yahoo_chart_json(ticker, period)
         if not data:
@@ -452,13 +442,9 @@ def create_chart(df: pd.DataFrame, ticker: str, period_days: int = 60):
 # =========================================================
 # LIQUIDITY FILTER
 # =========================================================
-def apply_liquidity_filter(
-    df: pd.DataFrame,
-    min_price: float,
-    min_vol20: float,
-    min_turnover: float,
-):
+def apply_liquidity_filter(df: pd.DataFrame, liq_cfg):
     try:
+        min_price, min_vol20, min_turnover = liq_cfg
         r = df.iloc[-1]
         price = float(r["Close"])
         vol_avg = float(df["Volume"].tail(20).mean())
@@ -471,10 +457,10 @@ def apply_liquidity_filter(
         if turnover < min_turnover:
             return False, "Turnover too low"
 
-        # anti saham tidur ekstra
+        # anti saham tidur ekstra: kalau benar-benar rata + ATR kecil
         bb_width = float(df["BB_WIDTH"].tail(20).mean())
         atr_pct = float(df["ATR_PCT"].iloc[-1])
-        if bb_width < 2 and atr_pct < 1.5:
+        if bb_width < 1.5 and atr_pct < 1.2:
             return False, "Too flat / sleeping stock"
 
         return True, "Passed"
@@ -511,11 +497,11 @@ def grade_from_score(score: int):
     return "D", max(score, 0)
 
 # =========================================================
-# STRATEGY SCORING
+# STRATEGY SCORING (tanpa banyak reject)
 # =========================================================
-def score_general(df: pd.DataFrame, liq):
+def score_general(df: pd.DataFrame, liq_cfg):
     try:
-        ok, reason = apply_liquidity_filter(df, *liq)
+        ok, reason = apply_liquidity_filter(df, liq_cfg)
         if not ok:
             return 0, {"Rejected": reason}, 0, "F"
 
@@ -531,9 +517,13 @@ def score_general(df: pd.DataFrame, liq):
         volr = float(r["VOL_RATIO"]) if not np.isnan(r["VOL_RATIO"]) else 0.0
         rsi = float(r["RSI"]) if not np.isnan(r["RSI"]) else 50.0
 
-        if mom20 < -10:
+        if mom20 < -12:
             details["Momentum"] = f"🔴 -{abs(mom20):.1f}% (20D)"
-            return 0, {"Rejected": "Strong negative momentum"}, 0, "F"
+        elif mom20 < -5:
+            score -= 5
+            details["Momentum"] = f"🟠 {mom20:.1f}% (20D)"
+        else:
+            details["Momentum"] = f"🟢 {mom20:.1f}% (20D)"
 
         if 50 <= rsi <= 65:
             score += 25
@@ -564,25 +554,22 @@ def score_general(df: pd.DataFrame, liq):
         m10 = float(r["MOM_10D"])
         if m5 > 3 and m10 > 5:
             score += 15
-            details["Momentum"] = f"🟢 ST +{m5:.1f}%"
+            details["ST Momentum"] = f"🟢 +{m5:.1f}% (5D)"
         elif m5 > 1 and m10 > 2:
             score += 10
-            details["Momentum"] = f"🟡 ST +{m5:.1f}%"
+            details["ST Momentum"] = f"🟡 +{m5:.1f}% (5D)"
         elif m5 > 0:
             score += 5
-            details["Momentum"] = f"🟠 ST +{m5:.1f}%"
-        elif mom20 > 5:
-            score += 8
-            details["Momentum"] = f"🟡 20D +{mom20:.1f}%"
+            details["ST Momentum"] = f"🟠 +{m5:.1f}% (5D)"
 
         grade, conf = grade_from_score(int(score))
         return int(score), details, conf, grade
     except Exception as e:
         return 0, {"Error": str(e)}, 0, "F"
 
-def score_bpjs(df: pd.DataFrame, liq):
+def score_bpjs(df: pd.DataFrame, liq_cfg):
     try:
-        ok, reason = apply_liquidity_filter(df, *liq)
+        ok, reason = apply_liquidity_filter(df, liq_cfg)
         if not ok:
             return 0, {"Rejected": reason}, 0, "F"
         r = df.iloc[-1]
@@ -594,17 +581,17 @@ def score_bpjs(df: pd.DataFrame, liq):
         details["Trend"] = label
 
         volr = float(r["VOL_RATIO"]) if not np.isnan(r["VOL_RATIO"]) else 0.0
-        if volr < 1.0:
-            return 0, {"Rejected": f"Low intraday liquidity ({volr:.1f}x)"}, 0, "F"
         if volr > 3.0:
             score += 35
-            details["Volume"] = f"🟢 {volr:.1f}x"
+            details["Volume"] = f"🔥 {volr:.1f}x"
         elif volr > 2.0:
             score += 25
+            details["Volume"] = f"🟢 {volr:.1f}x"
+        elif volr > 1.2:
+            score += 10
             details["Volume"] = f"🟡 {volr:.1f}x"
         else:
-            score += 10
-            details["Volume"] = f"🟠 {volr:.1f}x"
+            details["Volume"] = f"⚪ {volr:.1f}x"
 
         atr = float(r["ATR_PCT"]) if not np.isnan(r["ATR_PCT"]) else 0.0
         if 2 <= atr <= 6:
@@ -620,8 +607,6 @@ def score_bpjs(df: pd.DataFrame, liq):
         if 48 <= rsi <= 70:
             score += 15
             details["RSI"] = f"🟢 {rsi:.0f}"
-        elif rsi > 75:
-            details["RSI"] = f"🔴 Overbought {rsi:.0f}"
         else:
             score += 5
             details["RSI"] = f"⚪ {rsi:.0f}"
@@ -631,9 +616,9 @@ def score_bpjs(df: pd.DataFrame, liq):
     except Exception as e:
         return 0, {"Error": str(e)}, 0, "F"
 
-def score_bsjp(df: pd.DataFrame, liq):
+def score_bsjp(df: pd.DataFrame, liq_cfg):
     try:
-        ok, reason = apply_liquidity_filter(df, *liq)
+        ok, reason = apply_liquidity_filter(df, liq_cfg)
         if not ok:
             return 0, {"Rejected": reason}, 0, "F"
         r = df.iloc[-1]
@@ -653,7 +638,7 @@ def score_bsjp(df: pd.DataFrame, liq):
         volr = float(r["VOL_RATIO"]) if not np.isnan(r["VOL_RATIO"]) else 1.0
         if volr > 1.5:
             score += 15
-            details["Volume"] = f"🟡 {volr:.1f}x"
+            details["Volume"] = f"🟢 {volr:.1f}x"
         elif volr > 1.0:
             score += 8
             details["Volume"] = f"⚪ {volr:.1f}x"
@@ -662,17 +647,18 @@ def score_bsjp(df: pd.DataFrame, liq):
         if 50 <= rsi <= 68:
             score += 15
             details["RSI"] = f"🟢 {rsi:.0f}"
-        elif rsi > 72:
-            details["RSI"] = f"🔴 Overbought {rsi:.0f}"
+        else:
+            score += 5
+            details["RSI"] = f"⚪ {rsi:.0f}"
 
         grade, conf = grade_from_score(int(score))
         return int(score), details, conf, grade
     except Exception as e:
         return 0, {"Error": str(e)}, 0, "F"
 
-def score_bandar(df: pd.DataFrame, liq):
+def score_bandar(df: pd.DataFrame, liq_cfg):
     try:
-        ok, reason = apply_liquidity_filter(df, *liq)
+        ok, reason = apply_liquidity_filter(df, liq_cfg)
         if not ok:
             return 0, {"Rejected": reason}, 0, "F"
         r = df.iloc[-1]
@@ -713,9 +699,9 @@ def score_bandar(df: pd.DataFrame, liq):
     except Exception as e:
         return 0, {"Error": str(e)}, 0, "F"
 
-def score_swing(df: pd.DataFrame, liq):
+def score_swing(df: pd.DataFrame, liq_cfg):
     try:
-        ok, reason = apply_liquidity_filter(df, *liq)
+        ok, reason = apply_liquidity_filter(df, liq_cfg)
         if not ok:
             return 0, {"Rejected": reason}, 0, "F"
         r = df.iloc[-1]
@@ -741,8 +727,9 @@ def score_swing(df: pd.DataFrame, liq):
         elif 45 <= rsi < 50:
             score += 10
             details["RSI"] = f"🟡 {rsi:.0f}"
-        elif rsi > 70:
-            details["RSI"] = f"🔴 Overbought {rsi:.0f}"
+        else:
+            score += 5
+            details["RSI"] = f"⚪ {rsi:.0f}"
 
         volr = float(r["VOL_RATIO"]) if not np.isnan(r["VOL_RATIO"]) else 1.0
         if volr > 1.5:
@@ -754,9 +741,9 @@ def score_swing(df: pd.DataFrame, liq):
     except Exception as e:
         return 0, {"Error": str(e)}, 0, "F"
 
-def score_value(df: pd.DataFrame, liq):
+def score_value(df: pd.DataFrame, liq_cfg):
     try:
-        ok, reason = apply_liquidity_filter(df, *liq)
+        ok, reason = apply_liquidity_filter(df, liq_cfg)
         if not ok:
             return 0, {"Rejected": reason}, 0, "F"
         r = df.iloc[-1]
@@ -802,18 +789,15 @@ def score_value(df: pd.DataFrame, liq):
     except Exception as e:
         return 0, {"Error": str(e)}, 0, "F"
 
-def score_gorilla(df: pd.DataFrame, liq):
-    """🦍 Gorilla Mode – super agresif: cari saham ATR tinggi + volume meledak + momentum kencang"""
+def score_gorilla(df: pd.DataFrame, liq_cfg):
+    """🦍 Gorilla Mode – agresif: ATR tinggi + volume meledak + momentum kencang"""
     try:
-        ok, reason = apply_liquidity_filter(df, *liq)
+        ok, reason = apply_liquidity_filter(df, liq_cfg)
         if not ok:
             return 0, {"Rejected": reason}, 0, "F"
         r = df.iloc[-1]
         score = 0
         details = {}
-
-        if r["Close"] < r["EMA21"]:
-            return 0, {"Rejected": "Price below EMA21 (no momentum)"}, 0, "F"
 
         pts, label = ema_alignment_score(r)
         score += {4: 30, 3: 20, 2: 10}.get(pts, 0)
@@ -962,27 +946,28 @@ def compute_trade_plan(df: pd.DataFrame, strategy: str, trend: str) -> dict:
 # =========================================================
 # ORCHESTRATION
 # =========================================================
-def analyze_ticker(ticker: str, strategy: str, period: str, liq):
+def analyze_ticker(ticker: str, strategy: str, period: str):
     df = fetch_data(ticker, period)
     if df is None or df.empty:
         return None
 
     r = df.iloc[-1]
+    liq_cfg = LIQ_CONFIG.get(strategy, LIQ_CONFIG["General"])
 
     if strategy == "BPJS":
-        score, details, conf, grade = score_bpjs(df, liq)
+        score, details, conf, grade = score_bpjs(df, liq_cfg)
     elif strategy == "BSJP":
-        score, details, conf, grade = score_bsjp(df, liq)
+        score, details, conf, grade = score_bsjp(df, liq_cfg)
     elif strategy == "Bandar":
-        score, details, conf, grade = score_bandar(df, liq)
+        score, details, conf, grade = score_bandar(df, liq_cfg)
     elif strategy == "Swing":
-        score, details, conf, grade = score_swing(df, liq)
+        score, details, conf, grade = score_swing(df, liq_cfg)
     elif strategy == "Value":
-        score, details, conf, grade = score_value(df, liq)
+        score, details, conf, grade = score_value(df, liq_cfg)
     elif strategy == "Gorilla":
-        score, details, conf, grade = score_gorilla(df, liq)
+        score, details, conf, grade = score_gorilla(df, liq_cfg)
     else:
-        score, details, conf, grade = score_general(df, liq)
+        score, details, conf, grade = score_general(df, liq_cfg)
 
     trend = detect_trend(r)
     signal = classify_signal(r, score, grade, trend)
@@ -1053,9 +1038,9 @@ def create_csv_download(df: pd.DataFrame, title: str):
         mime="text/csv",
     )
 
-def process_ticker(t: str, strategy: str, period: str, liq):
+def process_ticker(t: str, strategy: str, period: str):
     try:
-        return analyze_ticker(t, strategy, period, liq)
+        return analyze_ticker(t, strategy, period)
     except Exception:
         return None
 
@@ -1065,7 +1050,6 @@ def scan_stocks(
     period: str,
     limit1: int,
     limit2: int,
-    liq,
 ):
     st.info(f"🔍 **STAGE 1**: Scanning {len(tickers)} stocks for {strategy}...")
     results = []
@@ -1073,9 +1057,7 @@ def scan_stocks(
     status = st.empty()
 
     with ThreadPoolExecutor(max_workers=10) as ex:
-        futures = {
-            ex.submit(process_ticker, t, strategy, period, liq): t for t in tickers
-        }
+        futures = {ex.submit(process_ticker, t, strategy, period): t for t in tickers}
         done = 0
         for fut in as_completed(futures):
             done += 1
@@ -1102,21 +1084,24 @@ def scan_stocks(
         f"✅ Stage 1: {len(df1)} candidates (Avg score: {df1['Score'].mean():.0f})"
     )
 
-    mask = (
+    mask_strict = (
         df1["Signal"].isin(["Strong Buy", "Buy"])
         & df1["Trend"].isin(["Strong Uptrend", "Uptrend"])
         & df1["Grade"].isin(["A+", "A", "B+", "B"])
     )
-    df2 = df1[mask].head(limit2)
+    df2_strict = df1[mask_strict].head(limit2)
 
-    if len(df2) == 0:
+    if len(df2_strict) == 0:
+        # Fallback: tetap kasih Top N by Score (supaya gak pernah kosong)
+        df2 = df1.head(limit2)
         st.warning(
-            "⚠️ Stage 2: Belum ada saham yang memenuhi **Uptrend + Buy/Strong Buy** "
-            "dengan filter sekarang. Coba longgarkan filter atau ganti strategi."
+            "⚠️ Stage 2 strict filter tidak menemukan saham uptrend + buy/strong buy.\n"
+            "   Menggunakan fallback: Top N by Score (masih disortir paling menarik)."
         )
     else:
+        df2 = df2_strict
         st.success(
-            f"🏆 Stage 2: {len(df2)} elite picks "
+            f"🏆 Stage 2: {len(df2)} elite picks Uptrend + Buy/Strong Buy "
             f"(Avg conf: {df2['Confidence'].mean():.0f}%)"
         )
 
@@ -1126,10 +1111,10 @@ def scan_stocks(
 # =========================================================
 # UI
 # =========================================================
-st.title("🚀 IDX Power Screener – Main")
+st.title("🚀 IDX Power Screener – Fixed Rules")
 st.caption(
     "Speed / Swing / BPJS / BSJP / Value / Bandar / 🦍 Gorilla – "
-    "Anti-saham tidur – Uptrend only"
+    "Filter & perhitungan sudah ditentukan di dalam code (anti 0 hasil)."
 )
 
 tickers = load_tickers()
@@ -1156,26 +1141,9 @@ with st.sidebar:
         ],
     )
 
-    st.markdown("### ⏱ Auto refresh")
-    auto_refresh_enable = st.checkbox("Enable auto refresh", value=True)
-    auto_refresh_secs = st.slider("Interval (sec)", 5, 60, 10, 5)
-
-    st.markdown("---")
-    st.markdown("### ⏳ History period")
-    history_period = st.selectbox(
-        "History", ["3mo", "6mo", "1y", "12mo"], index=1
-    )
-
-    st.markdown("### 💧 Liquidity filter")
-    min_price = st.number_input("Min price (Rp)", value=50.0, step=10.0)
-    min_vol20 = st.number_input("Min avg 20D volume", value=100000.0, step=50000.0)
-    min_turnover = st.number_input(
-        "Min turnover (Rp)", value=150_000_000.0, step=50_000_000.0
-    )
-
     st.markdown("### 🎯 Result limits")
     limit1 = st.slider("Stage 1 Top N", 20, 200, 120, 10)
-    limit2 = st.slider("Stage 2 Elite N", 5, 50, 15, 5)
+    limit2 = st.slider("Stage 2 Top N", 5, 50, 15, 5)
 
     st.markdown("### 🎯 Custom tickers (opsional)")
     sublist_input = st.text_input(
@@ -1185,10 +1153,15 @@ with st.sidebar:
 
     run_scan = st.button("🚀 RUN SCAN", type="primary", use_container_width=True)
 
-inject_autorefresh(auto_refresh_enable, auto_refresh_secs)
-
 # ---------------- MAIN PANEL ----------------
 display_ihsg_widget()
+
+# Tombol refresh data manual (IHSG + harga)
+if st.button("🔄 Refresh IHSG & Data Harga"):
+    fetch_ihsg_data.clear()
+    fetch_data.clear()
+    st.experimental_rerun()
+
 display_last_scan_info()
 
 def show_table(df: pd.DataFrame, title: str):
@@ -1264,16 +1237,16 @@ if "Single Stock" in menu:
         "Strategy",
         ["General", "BPJS", "BSJP", "Bandar", "Swing", "Value", "Gorilla"],
     )
+    period = st.selectbox("History", ["3mo", "6mo", "1y"], index=1)
 
     if st.button("🔍 ANALYZE", type="primary"):
         full = normalize_ticker(selected)
         with st.spinner(f"Analyzing {selected}..."):
-            df = fetch_data(full, history_period)
+            df = fetch_data(full, period)
             if df is None:
                 st.error("❌ Failed to fetch data")
             else:
-                liq = (min_price, min_vol20, min_turnover)
-                res = analyze_ticker(full, strategy_single, history_period, liq)
+                res = analyze_ticker(full, strategy_single, period)
 
                 st.markdown("### 📊 Interactive Chart")
                 chart = create_chart(df, selected)
@@ -1281,7 +1254,7 @@ if "Single Stock" in menu:
                     st.plotly_chart(chart, use_container_width=True)
 
                 if res is None:
-                    st.error("❌ Analysis failed or rejected by filters")
+                    st.error("❌ Analysis failed")
                 else:
                     st.markdown(f"## 💎 {res['Ticker']}")
                     st.markdown(
@@ -1335,6 +1308,7 @@ else:
         "🦍 Gorilla Mode (Very Aggressive)": "Gorilla",
     }
     strategy = strategy_map[menu]
+    period = "6mo"
 
     run_list = tickers
     if sublist_input:
@@ -1356,14 +1330,12 @@ else:
                 "Daftar tickers kosong. Tambahkan idx_stocks.json atau input custom."
             )
         else:
-            liq = (min_price, min_vol20, min_turnover)
             df1, df2 = scan_stocks(
                 run_list,
                 strategy,
-                history_period,
+                period,
                 limit1,
                 limit2,
-                liq,
             )
             if df1.empty and df2.empty:
                 st.error("❌ No stocks matched filters.")
@@ -1371,13 +1343,13 @@ else:
                 show_table(df1, "Stage 1 – Candidates")
                 show_table(
                     df2,
-                    "Stage 2 – Elite Picks (Uptrend + Buy/Strong Buy)",
+                    "Stage 2 – Elite Picks (Uptrend+Buy/Strong Buy atau Fallback Top Score)",
                 )
     else:
         st.info("Tekan **RUN SCAN** untuk mulai pemindaian saham.")
 
 st.markdown("---")
 st.caption(
-    "🚀 IDX Power Screener – Main | Educational purposes only | "
-    "Tick-size aware | Auto-refresh capable | Gorilla mode ready 🦍"
+    "🚀 IDX Power Screener – Fixed Rules | Educational only | "
+    "Filter & perhitungan sudah ditentukan di code | Fallback anti 0 hasil."
 )
