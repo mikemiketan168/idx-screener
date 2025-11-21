@@ -1,5 +1,6 @@
-# app.py
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 import os
 import math
 import time
@@ -15,9 +16,14 @@ from plotly.subplots import make_subplots
 
 # ================== BASIC CONFIG ==================
 st.set_page_config(
-    page_title="IDX Power Screener v5.0 – Phase 1 Brain Upgrade",
+    page_title="IDX Power Screener v6 – Educational Only",
     page_icon="🚀",
     layout="wide"
+)
+
+DISCLAIMER = (
+    "⚠️ Educational only – bukan rekomendasi beli/jual. "
+    "Gunakan sebagai bahan belajar & riset pribadi."
 )
 
 # -------------------- CONSTANTS & UTILS --------------------
@@ -102,27 +108,27 @@ def display_ihsg_widget():
     if ihsg["change_pct"] > 1.5:
         condition, guidance = (
             "🔥 Strong uptrend - Good for momentum!",
-            "✅ Excellent for SPEED/SWING/GORILLA",
+            "✅ Cocok untuk SPEED / SWING / GORILLA",
         )
     elif ihsg["change_pct"] > 0.5:
         condition, guidance = (
             "📈 Moderate uptrend - Good conditions",
-            "✅ Good for all strategies",
+            "✅ Cukup OK untuk semua strategi",
         )
     elif ihsg["change_pct"] > -0.5:
         condition, guidance = (
             "➡️ Sideways - Mixed conditions",
-            "⚠️ Be selective, use tight stops",
+            "⚠️ Lebih selektif, perhatikan risk",
         )
     elif ihsg["change_pct"] > -1.5:
         condition, guidance = (
             "📉 Moderate downtrend - Caution",
-            "⚠️ Fokus value / defensif",
+            "⚠️ Fokus defensif / kecilkan posisi",
         )
     else:
         condition, guidance = (
             "🔻 Strong downtrend - High risk",
-            "❌ Lebih baik kecilkan posisi / wait & see",
+            "❌ Lebih baik wait & see / kecil sekali",
         )
 
     st.markdown(
@@ -270,7 +276,8 @@ def fetch_data(ticker: str, period: str = "6mo") -> pd.DataFrame | None:
         # Stochastic
         low14 = df["Low"].rolling(14).min()
         high14 = df["High"].rolling(14).max()
-        df["STOCH_K"] = 100 * (df["Close"] - low14) / (high14 - low14)
+        rng = (high14 - low14).replace(0, np.nan)
+        df["STOCH_K"] = 100 * (df["Close"] - low14) / rng
         df["STOCH_D"] = df["STOCH_K"].rolling(3).mean()
 
         # ATR
@@ -404,7 +411,7 @@ def ema_alignment_score(r: pd.Series):
         int(r["Close"] > r["EMA9"])
     )
     label = {
-        4: "🟢 Perfect",
+        4: "🟢 Very Strong",
         3: "🟡 Strong",
         2: "🟠 Moderate",
         1: "🔴 Weak",
@@ -418,14 +425,14 @@ def grade_from_score(score: int):
     if score >= 80:
         return "A", 80
     if score >= 70:
-        return "B+", 70
+        return "B+", 75
     if score >= 60:
-        return "B", 60
+        return "B", 70
     if score >= 50:
-        return "C", 50
+        return "C", 60
     return "D", max(score, 0)
 
-# -------------------- PHASE 1: LIQUIDITY FILTER (ANTI SAHAM TIDUR) --------------------
+# -------------------- PHASE 1: LIQUIDITY FILTER --------------------
 def apply_liquidity_filter(df: pd.DataFrame, mode: str = "default"):
     """
     Filter anti saham tidur:
@@ -487,7 +494,7 @@ def score_general(df: pd.DataFrame):
 
         pts, label = ema_alignment_score(r)
         score += {4: 45, 3: 30, 2: 15}.get(pts, 0)
-        details["Trend"] = label
+        details["Trend_EMA"] = label
 
         mom20 = float(r["MOM_20D"])
         if mom20 < -8:
@@ -552,7 +559,7 @@ def score_general(df: pd.DataFrame):
         return 0, {"Error": str(e)}, 0, "F"
 
 def score_bpjs(df: pd.DataFrame):
-    """Intraday day-trading"""
+    """Short-term momentum / pseudo-daytrading (based on daily data)"""
     try:
         ok, reason = apply_liquidity_filter(df, mode="default")
         if not ok:
@@ -566,12 +573,12 @@ def score_bpjs(df: pd.DataFrame):
 
         pts, label = ema_alignment_score(r)
         score += {4: 35, 3: 25, 2: 10}.get(pts, 0)
-        details["Trend"] = label
+        details["Trend_EMA"] = label
 
         volr = float(r["VOL_RATIO"]) if not np.isnan(r["VOL_RATIO"]) else 0.0
-        if volr < 1.2:
-            return 0, {"Rejected": f"Low intraday liquidity ({volr:.1f}x)"}, 0, "F"
-        if volr > 3.0:
+        if volr < 1.0:
+            details["Volume"] = f"🟠 {volr:.1f}x"
+        elif volr > 3.0:
             score += 30
             details["Volume"] = f"🟢 {volr:.1f}x"
         elif volr > 2.0:
@@ -620,7 +627,7 @@ def score_bsjp(df: pd.DataFrame):
 
         pts, label = ema_alignment_score(r)
         score += {4: 40, 3: 30, 2: 15}.get(pts, 0)
-        details["Trend"] = label
+        details["Trend_EMA"] = label
 
         if float(r["MACD_HIST"]) > 0:
             score += 15
@@ -680,7 +687,7 @@ def score_bandar(df: pd.DataFrame):
 
         pts, label = ema_alignment_score(r)
         score += {4: 25, 3: 15, 2: 5}.get(pts, 0)
-        details["Trend"] = label
+        details["Trend_EMA"] = label
 
         volr = float(r["VOL_RATIO"]) if not np.isnan(r["VOL_RATIO"]) else 1.0
         if volr > 2.0:
@@ -712,7 +719,7 @@ def score_swing(df: pd.DataFrame):
 
         pts, label = ema_alignment_score(r)
         score += {4: 45, 3: 30, 2: 15}.get(pts, 0)
-        details["Trend"] = label
+        details["Trend_EMA"] = label
 
         dist = abs((r["Close"] - r["EMA21"]) / r["Close"]) * 100
         if dist <= 3:
@@ -752,7 +759,7 @@ def score_swing(df: pd.DataFrame):
         return 0, {"Error": str(e)}, 0, "F"
 
 def score_value(df: pd.DataFrame):
-    """Value / Undervalue / Rebound"""
+    """Value / Discount / Rebound (teknikal)"""
     try:
         ok, reason = apply_liquidity_filter(df, mode="default")
         if not ok:
@@ -762,10 +769,10 @@ def score_value(df: pd.DataFrame):
 
         if r["Close"] >= r["EMA200"]:
             score += 25
-            details["Trend"] = "🟢 >= EMA200 (uptrend/value)"
+            details["Trend_EMA"] = "🟢 >= EMA200 (uptrend/value)"
         else:
             score += 10
-            details["Trend"] = "🟡 < EMA200 (mean reversion)"
+            details["Trend_EMA"] = "🟡 < EMA200 (mean reversion)"
 
         rsi = float(r["RSI"]) if not np.isnan(r["RSI"]) else 50
         if 35 <= rsi <= 50:
@@ -812,7 +819,7 @@ def score_gorilla(df: pd.DataFrame):
 
         if r["Close"] > r["EMA9"] > r["EMA21"] > r["EMA50"]:
             score += 40
-            details["Trend"] = "🦍 Gorilla Uptrend"
+            details["Trend_EMA"] = "🦍 Gorilla Uptrend"
         else:
             return 0, {"Rejected": "Trend kurang kuat (butuh Close>EMA9>EMA21>EMA50)"}, 0, "F"
 
@@ -860,23 +867,38 @@ def score_gorilla(df: pd.DataFrame):
 
 # -------------------- TREND, SIGNAL & TRADE PLAN --------------------
 def detect_trend(r: pd.Series) -> str:
-    price, ema9, ema21, ema50, ema200 = map(
-        float, [r["Close"], r["EMA9"], r["EMA21"], r["EMA50"], r["EMA200"]]
-    )
-    if price > ema9 > ema21 > ema50 > ema200:
-        return "Strong Uptrend"
-    if price > ema50 and ema9 > ema21 > ema50:
-        return "Uptrend"
-    if abs(price - ema50) / price < 0.03:
+    """Deteksi tren yang sedikit lebih ramah pullback."""
+    price = float(r["Close"])
+    ema9 = float(r["EMA9"])
+    ema21 = float(r["EMA21"])
+    ema50 = float(r["EMA50"])
+    ema200 = float(r["EMA200"])
+
+    if price <= 0:
         return "Sideways"
+
+    # Strong uptrend: EMA50 > EMA200, EMA21 > EMA50, harga di atas EMA21
+    if ema50 > ema200 and ema21 > ema50 and price >= ema21:
+        return "Strong Uptrend"
+
+    # Uptrend: EMA50 > EMA200, harga tidak lebih dari 3% di bawah EMA50
+    if ema50 > ema200 and price >= ema50 * 0.97:
+        return "Uptrend"
+
+    # Sideways: harga sekitar EMA50 (±5%)
+    if abs(price - ema50) / price <= 0.05:
+        return "Sideways"
+
     return "Downtrend"
 
 def classify_signal(r: pd.Series, score: int, grade: str, trend: str) -> str:
-    rsi = float(r["RSI"]) if r.get("RSI") == r.get("RSI") else 50.0
-    volr = float(r["VOL_RATIO"]) if r.get("VOL_RATIO") == r.get("VOL_RATIO") else 1.0
-    m5 = float(r["MOM_5D"]) if r.get("MOM_5D") == r.get("MOM_5D") else 0.0
-    m20 = float(r["MOM_20D"]) if r.get("MOM_20D") == r.get("MOM_20D") else 0.0
+    """Klasifikasi sinyal netral: Strong Bullish / Bullish / Neutral / Bearish."""
+    rsi = float(r.get("RSI", 50.0)) if pd.notna(r.get("RSI", np.nan)) else 50.0
+    volr = float(r.get("VOL_RATIO", 1.0)) if pd.notna(r.get("VOL_RATIO", np.nan)) else 1.0
+    m5 = float(r.get("MOM_5D", 0.0)) if pd.notna(r.get("MOM_5D", np.nan)) else 0.0
+    m20 = float(r.get("MOM_20D", 0.0)) if pd.notna(r.get("MOM_20D", np.nan)) else 0.0
 
+    # Kriteria paling kuat
     if (
         trend in ["Strong Uptrend", "Uptrend"]
         and grade in ["A+", "A"]
@@ -885,22 +907,23 @@ def classify_signal(r: pd.Series, score: int, grade: str, trend: str) -> str:
         and m5 > 0
         and m20 > 0
     ):
-        return "Strong Buy"
+        return "Strong Bullish"
 
+    # Masih uptrend dan kualitas bagus
     if (
         trend in ["Strong Uptrend", "Uptrend"]
         and grade in ["A+", "A", "B+"]
         and volr > 1.0
         and 45 <= rsi <= 75
     ):
-        return "Buy"
+        return "Bullish"
 
-    if trend in ["Strong Uptrend", "Uptrend"] and grade in ["A+", "A", "B+", "B"]:
-        return "Hold"
-    if trend == "Sideways" and grade in ["B+", "B", "C"]:
-        return "Hold"
+    # Trend oke tapi kualitas sedang
+    if trend in ["Strong Uptrend", "Uptrend"] and grade in ["A+", "A", "B+", "B", "C"]:
+        return "Neutral"
 
-    return "Sell"
+    # Selain itu anggap Bearish / lemah
+    return "Bearish"
 
 def compute_trade_plan(df: pd.DataFrame, strategy: str, trend: str) -> dict:
     r = df.iloc[-1]
@@ -926,12 +949,14 @@ def compute_trade_plan(df: pd.DataFrame, strategy: str, trend: str) -> dict:
         tp3 = round_to_tick(entry * 1.18)
         sl = round_to_tick(entry * 0.96)
     else:
+        # General / BPJS / BSJP / Bandar
         entry = round_to_tick(price * 0.995)
         tp1 = round_to_tick(entry * 1.04)
         tp2 = round_to_tick(entry * 1.07)
         tp3 = None
         sl = round_to_tick(entry * 0.97)
 
+    # Adjust entry dekat EMA21 kalau tren bagus
     if trend in ["Strong Uptrend", "Uptrend"] and ema21 < price:
         ema_entry = round_to_tick(ema21 * 1.01)
         if price * 0.9 < ema_entry < price:
@@ -956,6 +981,7 @@ def analyze_ticker(ticker: str, strategy: str, period: str) -> dict | None:
         return None
     r = df.iloc[-1]
 
+    # 1) Scoring per strategi
     if strategy == "BPJS":
         score, details, conf, grade = score_bpjs(df)
     elif strategy == "BSJP":
@@ -974,8 +1000,19 @@ def analyze_ticker(ticker: str, strategy: str, period: str) -> dict | None:
     if grade not in ["A+", "A", "B+", "B", "C"]:
         return None
 
+    # 2) Trend & Signal
     trend = detect_trend(r)
     signal = classify_signal(r, score, grade, trend)
+
+    # 3) Hard filter untuk screener multi-stocks:
+    bullish_strategies = {"General", "BPJS", "BSJP", "Bandar", "Swing", "Gorilla"}
+    if strategy in bullish_strategies:
+        if trend not in ["Strong Uptrend", "Uptrend"]:
+            return None
+        if signal not in ["Strong Bullish", "Bullish"]:
+            return None
+
+    # 4) Trade plan
     plan = compute_trade_plan(df, strategy, trend)
 
     res = {
@@ -1018,7 +1055,7 @@ def display_last_scan_info() -> bool:
           <p style='margin:5px 0 0 0;color:#d1fae5;font-size:0.9em;'>
             Strategy: {st.session_state.last_scan_strategy} |
             Time: {st.session_state.last_scan_time.strftime('%H:%M:%S')} ({mins} min ago) |
-            Found: {len(df2)} Grade A+/A/B+ stocks
+            Found: {len(df2)} Grade A+/A/B+/B stocks
           </p>
         </div>
         """,
@@ -1027,11 +1064,10 @@ def display_last_scan_info() -> bool:
         return True
     return False
 
-# 🔧 FIX: kasih key unik per tombol download
 def create_csv_download(df: pd.DataFrame, strategy_label: str, button_key: str):
     if df is None or df.empty:
         return
-    export = df.drop(columns=["Details"], errors="ignore").copy()
+    export = df.copy()
     csv = export.to_csv(index=False).encode("utf-8")
     ts = datetime.now().strftime("%Y%m%d_%H%M")
     st.download_button(
@@ -1061,7 +1097,7 @@ def scan_stocks(
         for fut in as_completed(futures):
             done += 1
             progress.progress(done / len(tickers))
-            status.text(f"📊 {done}/{len(tickers)} | Found: {len(results)}")
+            status.text(f"📊 {done}/{len(tickers)} | Collected: {len(results)} bullish candidates")
             r = fut.result()
             if r:
                 results.append(r)
@@ -1081,10 +1117,14 @@ def scan_stocks(
         f"✅ Stage 1: Found {len(df1)} candidates (Avg score: {df1['Score'].mean():.0f})"
     )
 
-    df2 = df1[df1["Grade"].isin(["A+", "A", "B+", "B"])].head(limit2)
-    st.success(
-        f"🏆 Stage 2: {len(df2)} elite picks (Avg conf: {df2['Confidence'].mean():.0f}%)"
-    )
+    df2 = df1[df1["Grade"].isin(["A+", "A", "B+"])]  # lebih elite
+    df2 = df2.head(limit2)
+    if not df2.empty:
+        st.success(
+            f"🏆 Stage 2: {len(df2)} elite picks (Avg conf: {df2['Confidence'].mean():.0f}%)"
+        )
+    else:
+        st.warning("Stage 2: Tidak ada yang memenuhi kriteria elite (A+/A/B+).")
 
     save_scan_to_session(df2, df1, strategy)
     return df1, df2
@@ -1096,29 +1136,36 @@ def show_table(df: pd.DataFrame, title: str, strategy_label: str):
         return
     st.subheader(title)
     show = df.copy()
+
+    # Bulatkan ke tick IDX
     if "Price" in show:
         show["Price"] = show["Price"].apply(lambda x: round_to_tick(x))
+
+    # Rename SL -> CL (Cut Loss) untuk tampilan
+    if "SL" in show.columns:
+        show = show.rename(columns={"SL": "CL"})
+
     order = [
         c
         for c in [
             "Ticker",
             "Price",
-            "Score",
-            "Confidence",
-            "Grade",
-            "Trend",
-            "Signal",
-            "Entry",
-            "Entry_Aggressive",
+            "Entry",             # Ideal entry
+            "Entry_Aggressive",  # Agresif entry
             "TP1",
             "TP2",
             "TP3",
-            "SL",
+            "CL",                # dari SL
+            "Signal",
+            "Trend",
+            "Score",
+            "Confidence",
+            "Grade",
         ]
         if c in show.columns
     ]
+
     st.dataframe(show[order], use_container_width=True, hide_index=True)
-    # 🔑 key unik per kombinasi stage + strategi
     create_csv_download(
         show[order],
         strategy_label,
@@ -1136,10 +1183,11 @@ def show_table(df: pd.DataFrame, title: str, strategy_label: str):
                 else ""
             )
             st.caption(
-                f"Price {format_idr(row['Price'])} | Entry {format_idr(row['Entry'])} "
-                f"(Agg {format_idr(row['Entry_Aggressive'])}) | "
-                f"TP1 {format_idr(row['TP1'])} | TP2 {format_idr(row['TP2'])}{tp3_line} "
-                f"| SL {format_idr(row['SL'])}"
+                f"Price {format_idr(row['Price'])} | "
+                f"Ideal Entry {format_idr(row['Entry'])} "
+                f"(Agresif {format_idr(row['Entry_Aggressive'])}) | "
+                f"TP1 {format_idr(row['TP1'])} | TP2 {format_idr(row['TP2'])}"
+                f"{tp3_line} | CL {format_idr(row['CL'])}"
             )
             details = row.get("Details", {})
             if isinstance(details, dict) and details:
@@ -1147,10 +1195,11 @@ def show_table(df: pd.DataFrame, title: str, strategy_label: str):
             st.markdown("---")
 
 # ================== MAIN UI ==================
-st.title("🚀 IDX Power Screener v5.0 – Phase 1 Brain Upgrade")
+st.title("🚀 IDX Power Screener v6 – Educational Only")
 st.caption(
     "BPJS / BSJP / Bandar / Swing / Value / Gorilla + IHSG + Session + Tick-size | "
-    "Edu only – bukan rekomendasi."
+    "Tujuan: bantu belajar & riset, bukan rekomendasi. "
+    + DISCLAIMER
 )
 
 display_ihsg_widget()
@@ -1165,10 +1214,10 @@ with st.sidebar:
     menu = st.radio(
         "📋 Strategy",
         [
-            "⚡ SPEED Trader (1-2d)",
+            "⚡ SPEED Trader (1-3d)",
             "🎯 SWING Trader (3-5d)",
-            "💎 VALUE Plays (Undervalued)",
-            "⚡ BPJS (Day Trading)",
+            "💎 VALUE Plays (Technical Discount)",
+            "⚡ BPJS (Short-Term Momentum)",
             "🌙 BSJP (Overnight)",
             "🔮 Bandar Tracking",
             "🦍 Gorilla Mode (Very Aggressive)",
@@ -1179,18 +1228,18 @@ with st.sidebar:
 
     if "Single Stock" not in menu:
         period = st.selectbox("Period", ["3mo", "6mo", "1y"], index=1)
-        st.markdown("### 🎯 Filtering internal (fixed by code)")
+        st.markdown("### 🎯 Internal Filtering (fixed by code)")
         c1, c2 = st.columns(2)
         with c1:
-            limit1 = st.slider("Stage 1: Top N", 20, 150, 80, 10)
+            limit1 = st.slider("Stage 1: Top N", 50, 200, 100, 10)
         with c2:
-            limit2 = st.slider("Stage 2: Elite", 5, 40, 15, 5)
+            limit2 = st.slider("Stage 2: Elite", 10, 50, 20, 5)
         sublist_input = st.text_input(
             "Filter tickers (comma separated, optional)",
             placeholder="e.g. BBRI, BBCA, TLKM",
         )
         run_scan = st.button("🚀 RUN SCAN", type="primary", use_container_width=True)
-    st.caption("v5.0 Phase 1 – Otak diperkuat, filter saham tidur, Gorilla v2")
+    st.caption("v6 – Fokus bullish & uptrend, anti saham tidur, Gorilla v2")
 
 display_last_scan_info()
 
@@ -1206,6 +1255,13 @@ if "Single Stock" in menu:
     )
     period = st.selectbox("Period", ["3mo", "6mo", "1y"], index=1)
 
+    st.markdown(
+        "- **Strong Bullish**: tren & momentum sangat kuat  \n"
+        "- **Bullish**: tren naik cukup sehat  \n"
+        "- **Neutral**: bisa sideways / butuh konfirmasi  \n"
+        "- **Bearish**: tren lemah / cenderung turun"
+    )
+
     if st.button("🔍 ANALYZE", type="primary"):
         full = normalize_ticker(selected)
         with st.spinner(f"Analyzing {selected}..."):
@@ -1219,7 +1275,10 @@ if "Single Stock" in menu:
                 if chart:
                     st.plotly_chart(chart, use_container_width=True)
                 if res is None:
-                    st.error("❌ Analysis failed or rejected by filters")
+                    st.error(
+                        "❌ Analysis gagal / tidak memenuhi filter bullish. "
+                        "Untuk belajar, boleh cek chart & indikator manual."
+                    )
                 else:
                     st.markdown(f"## 💎 {res['Ticker']}")
                     st.markdown(
@@ -1231,8 +1290,8 @@ if "Single Stock" in menu:
                     c3.metric("Confidence", f"{res['Confidence']}%")
 
                     label_map = {
-                        "General": "SPEED PLAN (1–2 Hari)",
-                        "BPJS": "BPJS PLAN (Intraday)",
+                        "General": "SPEED PLAN (1–3 Hari)",
+                        "BPJS": "BPJS PLAN (Short-Term)",
                         "BSJP": "BSJP PLAN (Overnight)",
                         "Bandar": "BANDAR PLAN (Momentum)",
                         "Swing": "SWING PLAN (3–5 Hari)",
@@ -1253,7 +1312,7 @@ if "Single Stock" in menu:
                         f"• **TP1:** {format_idr(res['TP1'])}  \n"
                         f"• **TP2:** {format_idr(res['TP2'])}  \n"
                         f"{tp3_line}"
-                        f"• **Stop Loss:** {format_idr(res['SL'])}"
+                        f"• **Cut Loss (CL):** {format_idr(res['SL'])}"
                     )
 
                     st.markdown("**Technical Notes:**")
@@ -1261,10 +1320,10 @@ if "Single Stock" in menu:
                         st.caption(f"• **{k}**: {v}")
 else:
     strategy_map = {
-        "⚡ SPEED Trader (1-2d)": "General",
+        "⚡ SPEED Trader (1-3d)": "General",
         "🎯 SWING Trader (3-5d)": "Swing",
-        "💎 VALUE Plays (Undervalued)": "Value",
-        "⚡ BPJS (Day Trading)": "BPJS",
+        "💎 VALUE Plays (Technical Discount)": "Value",
+        "⚡ BPJS (Short-Term Momentum)": "BPJS",
         "🌙 BSJP (Overnight)": "BSJP",
         "🔮 Bandar Tracking": "Bandar",
         "🦍 Gorilla Mode (Very Aggressive)": "Gorilla",
@@ -1294,7 +1353,7 @@ else:
                 show_table(df1, "Stage 1 – Candidates (sorted by Score)", strategy)
                 show_table(
                     df2,
-                    "Stage 2 – Elite Picks (Uptrend + Buy/Strong Buy/Best Scores)",
+                    "Stage 2 – Elite Picks (Uptrend + Strong/Bullish + Best Scores)",
                     strategy,
                 )
     else:
@@ -1302,6 +1361,6 @@ else:
 
 st.markdown("---")
 st.caption(
-    "🚀 IDX Power Screener v5.0 – Phase 1 Brain Upgrade | "
-    "Educational purposes only | Tick-size aware | Built to help traders, not sell signals."
+    "🚀 IDX Power Screener v6 – Educational purposes only | Tick-size aware | "
+    "Dibuat untuk bantu belajar, bukan memberi sinyal pasti."
 )
