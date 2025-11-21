@@ -1202,7 +1202,7 @@ st.caption(
     + DISCLAIMER
 )
 
-display_ihsg_widget()
+# display_ihsg_widget()   # <-- MATIKAN SEMENTARA
 tickers = load_tickers()
 
 with st.sidebar:
