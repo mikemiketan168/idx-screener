@@ -16,7 +16,7 @@ from plotly.subplots import make_subplots
 
 # ================== BASIC CONFIG ==================
 st.set_page_config(
-    page_title="IDX Power Screener v6 – Educational Only",
+    page_title="IDX Power Screener v7 – Educational Only",
     page_icon="🚀",
     layout="wide"
 )
@@ -72,27 +72,50 @@ for k, v in [
     if k not in st.session_state:
         st.session_state[k] = v
 
-# -------------------- IHSG WIDGET --------------------
+# -------------------- IHSG WIDGET (tanpa yfinance) --------------------
 @st.cache_data(ttl=180)
 def fetch_ihsg_data():
+    """Ambil data IHSG simple via Yahoo chart API (tanpa yfinance)."""
     try:
-        import yfinance as yf
-        ihsg = yf.Ticker("^JKSE")
-        hist = ihsg.history(period="1d", interval="1d", auto_adjust=False)
-        if hist.empty:
+        symbol = "^JKSE"
+        end = int(datetime.now().timestamp())
+        start = end - 3 * 86400  # 3 hari ke belakang
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+        params = {"period1": start, "period2": end, "interval": "1d"}
+        headers = {"User-Agent": "Mozilla/5.0"}
+        r = requests.get(url, params=params, headers=headers, timeout=10)
+        if r.status_code != 200:
             return None
-        current = float(hist["Close"].iloc[-1])
-        open_price = float(hist["Open"].iloc[-1])
-        high = float(hist["High"].iloc[-1])
-        low = float(hist["Low"].iloc[-1])
-        change = current - open_price
-        change_pct = (change / open_price) * 100 if open_price else 0.0
+
+        data = r.json()
+        result = data.get("chart", {}).get("result", [None])[0]
+        if not result:
+            return None
+
+        q = result["indicators"]["quote"][0]
+        ts = result.get("timestamp", [])
+        if not ts or len(ts) < 2:
+            return None
+
+        close = q["close"]
+        high = q["high"]
+        low = q["low"]
+        open_price = q["open"]
+
+        current = float(close[-1])
+        prev_close = float(close[-2])
+        day_high = float(high[-1])
+        day_low = float(low[-1])
+
+        change = current - prev_close
+        change_pct = (change / prev_close) * 100 if prev_close else 0.0
+
         return {
             "price": current,
             "change": change,
             "change_pct": change_pct,
-            "high": high,
-            "low": low,
+            "high": day_high,
+            "low": day_low,
             "status": "up" if change >= 0 else "down",
         }
     except Exception:
@@ -107,28 +130,28 @@ def display_ihsg_widget():
     status_text = "BULLISH" if ihsg["status"] == "up" else "BEARISH"
     if ihsg["change_pct"] > 1.5:
         condition, guidance = (
-            "🔥 Strong uptrend - Good for momentum!",
+            "🔥 Strong uptrend - Good untuk momentum!",
             "✅ Cocok untuk SPEED / SWING / GORILLA",
         )
     elif ihsg["change_pct"] > 0.5:
         condition, guidance = (
-            "📈 Moderate uptrend - Good conditions",
-            "✅ Cukup OK untuk semua strategi",
+            "📈 Uptrend moderat - Kondisi OK",
+            "✅ Cukup oke untuk semua strategi",
         )
     elif ihsg["change_pct"] > -0.5:
         condition, guidance = (
-            "➡️ Sideways - Mixed conditions",
+            "➡️ Sideways - Campur aduk",
             "⚠️ Lebih selektif, perhatikan risk",
         )
     elif ihsg["change_pct"] > -1.5:
         condition, guidance = (
-            "📉 Moderate downtrend - Caution",
+            "📉 Turun moderat - Hati-hati",
             "⚠️ Fokus defensif / kecilkan posisi",
         )
     else:
         condition, guidance = (
             "🔻 Strong downtrend - High risk",
-            "❌ Lebih baik wait & see / kecil sekali",
+            "❌ Better wait & see / size kecil banget",
         )
 
     st.markdown(
@@ -865,7 +888,7 @@ def score_gorilla(df: pd.DataFrame):
     except Exception as e:
         return 0, {"Error": str(e)}, 0, "F"
 
-# -------------------- TREND, SIGNAL & TRADE PLAN --------------------
+# -------------------- TREND, SIGNAL & ELIGIBILITY --------------------
 def detect_trend(r: pd.Series) -> str:
     """Deteksi tren yang sedikit lebih ramah pullback."""
     price = float(r["Close"])
@@ -877,15 +900,12 @@ def detect_trend(r: pd.Series) -> str:
     if price <= 0:
         return "Sideways"
 
-    # Strong uptrend: EMA50 > EMA200, EMA21 > EMA50, harga di atas EMA21
     if ema50 > ema200 and ema21 > ema50 and price >= ema21:
         return "Strong Uptrend"
 
-    # Uptrend: EMA50 > EMA200, harga tidak lebih dari 3% di bawah EMA50
     if ema50 > ema200 and price >= ema50 * 0.97:
         return "Uptrend"
 
-    # Sideways: harga sekitar EMA50 (±5%)
     if abs(price - ema50) / price <= 0.05:
         return "Sideways"
 
@@ -898,7 +918,6 @@ def classify_signal(r: pd.Series, score: int, grade: str, trend: str) -> str:
     m5 = float(r.get("MOM_5D", 0.0)) if pd.notna(r.get("MOM_5D", np.nan)) else 0.0
     m20 = float(r.get("MOM_20D", 0.0)) if pd.notna(r.get("MOM_20D", np.nan)) else 0.0
 
-    # Kriteria paling kuat
     if (
         trend in ["Strong Uptrend", "Uptrend"]
         and grade in ["A+", "A"]
@@ -909,7 +928,6 @@ def classify_signal(r: pd.Series, score: int, grade: str, trend: str) -> str:
     ):
         return "Strong Bullish"
 
-    # Masih uptrend dan kualitas bagus
     if (
         trend in ["Strong Uptrend", "Uptrend"]
         and grade in ["A+", "A", "B+"]
@@ -918,12 +936,29 @@ def classify_signal(r: pd.Series, score: int, grade: str, trend: str) -> str:
     ):
         return "Bullish"
 
-    # Trend oke tapi kualitas sedang
     if trend in ["Strong Uptrend", "Uptrend"] and grade in ["A+", "A", "B+", "B", "C"]:
         return "Neutral"
 
-    # Selain itu anggap Bearish / lemah
     return "Bearish"
+
+def is_eligible_for_speed(trend: str, signal: str, grade: str) -> tuple[bool, str]:
+    """
+    Cek apakah saham ini lolos filter ketat SPEED:
+    - Trend harus Strong Uptrend / Uptrend
+    - Signal harus Strong Bullish / Bullish
+    - Grade minimal C
+    """
+    reasons = []
+    if trend not in ["Strong Uptrend", "Uptrend"]:
+        reasons.append(f"Trend = {trend}")
+    if signal not in ["Strong Bullish", "Bullish"]:
+        reasons.append(f"Signal = {signal}")
+    if grade not in ["A+", "A", "B+", "B", "C"]:
+        reasons.append(f"Grade = {grade}")
+
+    if reasons:
+        return False, "; ".join(reasons)
+    return True, "Lolos filter SPEED (trend & sinyal bullish)."
 
 def compute_trade_plan(df: pd.DataFrame, strategy: str, trend: str) -> dict:
     r = df.iloc[-1]
@@ -975,7 +1010,11 @@ def compute_trade_plan(df: pd.DataFrame, strategy: str, trend: str) -> dict:
     }
 
 # -------------------- ORCHESTRATION --------------------
-def analyze_ticker(ticker: str, strategy: str, period: str) -> dict | None:
+def analyze_ticker(ticker: str, strategy: str, period: str, strict: bool = True) -> dict | None:
+    """
+    strict = True  -> untuk screener (multi stocks): harus bullish & grade bagus.
+    strict = False -> untuk Single Stock: selalu analisa selama data & likuid OK.
+    """
     df = fetch_data(ticker, period)
     if df is None or df.empty:
         return None
@@ -997,22 +1036,24 @@ def analyze_ticker(ticker: str, strategy: str, period: str) -> dict | None:
     else:
         score, details, conf, grade = score_general(df)
 
-    if grade not in ["A+", "A", "B+", "B", "C"]:
+    # Kalau strict, buang grade jelek
+    if strict and grade not in ["A+", "A", "B+", "B", "C"]:
         return None
 
     # 2) Trend & Signal
     trend = detect_trend(r)
     signal = classify_signal(r, score, grade, trend)
 
-    # 3) Hard filter untuk screener multi-stocks:
+    # 3) Cek eligibility untuk SPEED-style filter
+    eligible_speed, eligible_reason = is_eligible_for_speed(trend, signal, grade)
+
+    # 4) Hard filter khusus screener multi-stocks (tidak untuk Single Stock)
     bullish_strategies = {"General", "BPJS", "BSJP", "Bandar", "Swing", "Gorilla"}
-    if strategy in bullish_strategies:
-        if trend not in ["Strong Uptrend", "Uptrend"]:
-            return None
-        if signal not in ["Strong Bullish", "Bullish"]:
+    if strict and strategy in bullish_strategies:
+        if not eligible_speed:
             return None
 
-    # 4) Trade plan
+    # 5) Trade plan
     plan = compute_trade_plan(df, strategy, trend)
 
     res = {
@@ -1029,6 +1070,8 @@ def analyze_ticker(ticker: str, strategy: str, period: str) -> dict | None:
         "TP2": plan["tp2"],
         "SL": plan["sl"],
         "Details": details,
+        "Eligible_Speed": eligible_speed,
+        "Eligible_Reason": eligible_reason,
     }
     if plan["tp3"]:
         res["TP3"] = plan["tp3"]
@@ -1055,7 +1098,7 @@ def display_last_scan_info() -> bool:
           <p style='margin:5px 0 0 0;color:#d1fae5;font-size:0.9em;'>
             Strategy: {st.session_state.last_scan_strategy} |
             Time: {st.session_state.last_scan_time.strftime('%H:%M:%S')} ({mins} min ago) |
-            Found: {len(df2)} Grade A+/A/B+/B stocks
+            Found: {len(df2)} Grade A+/A/B+ stocks
           </p>
         </div>
         """,
@@ -1080,7 +1123,7 @@ def create_csv_download(df: pd.DataFrame, strategy_label: str, button_key: str):
 
 def process_ticker(t: str, strategy: str, period: str):
     try:
-        return analyze_ticker(t, strategy, period)
+        return analyze_ticker(t, strategy, period, strict=True)
     except Exception:
         return None
 
@@ -1117,7 +1160,7 @@ def scan_stocks(
         f"✅ Stage 1: Found {len(df1)} candidates (Avg score: {df1['Score'].mean():.0f})"
     )
 
-    df2 = df1[df1["Grade"].isin(["A+", "A", "B+"])]  # lebih elite
+    df2 = df1[df1["Grade"].isin(["A+", "A", "B+"])]
     df2 = df2.head(limit2)
     if not df2.empty:
         st.success(
@@ -1137,11 +1180,9 @@ def show_table(df: pd.DataFrame, title: str, strategy_label: str):
     st.subheader(title)
     show = df.copy()
 
-    # Bulatkan ke tick IDX
     if "Price" in show:
         show["Price"] = show["Price"].apply(lambda x: round_to_tick(x))
 
-    # Rename SL -> CL (Cut Loss) untuk tampilan
     if "SL" in show.columns:
         show = show.rename(columns={"SL": "CL"})
 
@@ -1150,12 +1191,12 @@ def show_table(df: pd.DataFrame, title: str, strategy_label: str):
         for c in [
             "Ticker",
             "Price",
-            "Entry",             # Ideal entry
-            "Entry_Aggressive",  # Agresif entry
+            "Entry",
+            "Entry_Aggressive",
             "TP1",
             "TP2",
             "TP3",
-            "CL",                # dari SL
+            "CL",
             "Signal",
             "Trend",
             "Score",
@@ -1195,14 +1236,55 @@ def show_table(df: pd.DataFrame, title: str, strategy_label: str):
             st.markdown("---")
 
 # ================== MAIN UI ==================
-st.title("🚀 IDX Power Screener v6 – Educational Only")
+st.title("🚀 IDX Power Screener v7 – Educational Only")
 st.caption(
-    "BPJS / BSJP / Bandar / Swing / Value / Gorilla + IHSG + Session + Tick-size | "
-    "Tujuan: bantu belajar & riset, bukan rekomendasi. "
+    "BPJS / BSJP / Bandar / Swing / Value / Gorilla + IHSG + Tick-size IDX | "
+    "Tujuan: bantu trader pemula belajar membaca saham dengan lebih terstruktur. "
     + DISCLAIMER
 )
 
-# display_ihsg_widget()   # <-- MATIKAN SEMENTARA
+with st.expander("📘 Help & Cara Pakai (wajib baca untuk pemula)"):
+    st.markdown(
+        """
+**Alur penggunaan yang disarankan:**
+
+1. **Sebelum market buka**  
+   - Pilih strategi utama di sidebar:  
+     - ⚡ SPEED: cocok buat 1–3 hari  
+     - 🎯 SWING: 3–5 hari, cari pullback sehat  
+     - 💎 VALUE: teknikal discount / rebound (bukan value fundamental)  
+     - ⚡ BPJS: short-term momentum  
+     - 🌙 BSJP: overnight / 1–2 hari  
+     - 🦍 Gorilla: sangat agresif, volatilitas tinggi  
+     - 🔮 Bandar: fokus akumulasi & breakout  
+   - Tekan **RUN SCAN**  
+   - Lihat **Stage 1** (kandidat) dan **Stage 2** (elite picks).
+
+2. **Sesudah dapat list dari screener**  
+   - Klik ticker yang menarik, lalu buka di menu **Single Stock**.  
+   - Di Single Stock kamu akan lihat:  
+     - Trend: Strong Uptrend / Uptrend / Sideways / Downtrend  
+     - Signal: Strong Bullish / Bullish / Neutral / Bearish  
+     - Status: apakah saham ini **lolos filter SPEED** atau tidak, plus alasannya.  
+     - Rencana teknikal: Ideal Entry, Entry Agresif, TP1/TP2/TP3, CL (Cut Loss).
+
+3. **Mindset penting**  
+   - Screener ini **bukan mesin ramal future** – hanya alat sorting:  
+     - dari ratusan saham → jadi puluhan kandidat → jadi beberapa yang paling kuat.  
+   - Single Stock membantu kamu **belajar membaca**:  
+     - kenapa satu saham dianggap kuat/lemah  
+     - apa indikator yang mendukung / mengganjal.
+
+4. **Perbedaan Screener vs Single Stock**  
+   - Screener (multi stocks) = **mode ketat**  
+     - hanya ambil yang uptrend + sinyal bullish + grade bagus.  
+   - Single Stock = **mode belajar**  
+     - analisa tetap ditampilkan meskipun saham sedang sideways / downtrend,  
+       tapi diberikan warning dan status kelolosan screener.
+"""
+    )
+
+display_ihsg_widget()
 tickers = load_tickers()
 
 with st.sidebar:
@@ -1239,7 +1321,7 @@ with st.sidebar:
             placeholder="e.g. BBRI, BBCA, TLKM",
         )
         run_scan = st.button("🚀 RUN SCAN", type="primary", use_container_width=True)
-    st.caption("v6 – Fokus bullish & uptrend, anti saham tidur, Gorilla v2")
+    st.caption("v7 – Fokus bullish & uptrend, anti saham tidur, Gorilla v2")
 
 display_last_scan_info()
 
@@ -1269,14 +1351,14 @@ if "Single Stock" in menu:
             if df is None:
                 st.error("❌ Failed to fetch data")
             else:
-                res = analyze_ticker(full, strategy_single, period)
+                res = analyze_ticker(full, strategy_single, period, strict=False)
                 st.markdown("### 📊 Interactive Chart")
                 chart = create_chart(df, selected)
                 if chart:
                     st.plotly_chart(chart, use_container_width=True)
                 if res is None:
                     st.error(
-                        "❌ Analysis gagal / tidak memenuhi filter bullish. "
+                        "❌ Analysis gagal. Kemungkinan: data tidak lengkap atau saham terlalu tidak likuid.\n"
                         "Untuk belajar, boleh cek chart & indikator manual."
                     )
                 else:
@@ -1284,6 +1366,20 @@ if "Single Stock" in menu:
                     st.markdown(
                         f"### Grade: **{res['Grade']}** | Trend: **{res['Trend']}** | Signal: **{res['Signal']}**"
                     )
+
+                    # Status vs filter SPEED (radar ketat)
+                    if res["Eligible_Speed"]:
+                        st.success(
+                            "✅ Menurut filter **SPEED (ketat)**, saham ini LOLOS:  \n"
+                            f"{res['Eligible_Reason']}"
+                        )
+                    else:
+                        st.warning(
+                            "❌ Menurut filter **SPEED (ketat)**, saham ini TIDAK MASUK radar karena:  \n"
+                            f"{res['Eligible_Reason']}  \n\n"
+                            "Rencana Entry/TP/CL di bawah hanya untuk latihan & simulasi, bukan ajakan masuk."
+                        )
+
                     c1, c2, c3 = st.columns(3)
                     c1.metric("Price", format_idr(res["Price"]))
                     c2.metric("Score", f"{res['Score']}/100")
@@ -1361,6 +1457,6 @@ else:
 
 st.markdown("---")
 st.caption(
-    "🚀 IDX Power Screener v6 – Educational purposes only | Tick-size aware | "
-    "Dibuat untuk bantu belajar, bukan memberi sinyal pasti."
+    "🚀 IDX Power Screener v7 – Educational purposes only | Tick-size aware | "
+    "Dibuat untuk bantu trader pemula, bukan memberi sinyal pasti."
 )
